@@ -1,8 +1,6 @@
 -- ================================================================
---  Bounty.lua — MAIN SCRIPT v2
---  pSilent: dùng CFrame redirect thay FindPartOnRay deprecated
---  M1 humanized, burst control, CPS 12-18
---  Auto Hop 773/267, Low Health Fly
+--  Bounty.lua — MAIN SCRIPT
+--  pSilent, M1 humanized, Auto Skill, Auto Hop, Low Health Fly
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -101,50 +99,36 @@ end
 local function isVisible(pos)
     local mc = LP.Character; if not mc then return false end
     local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return false end
-    local origin = mr.Position + Vector3.new(0,2,0)
-    local dir    = (pos - origin)
-    local result = workspace:Raycast(origin, dir, RaycastParams.new())
+    local origin = mr.Position + Vector3.new(0, 2, 0)
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {mc}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local result = workspace:Raycast(origin, pos - origin, params)
     if not result then return true end
     local tc = TGT and TGT.Character
     return tc and result.Instance:IsDescendantOf(tc)
 end
 
 -- ================================================================
--- [4] pSILENT — CFrame snap 1 frame khi M1/skill
---     Camera snap về target đúng lúc click → server nhận hit hợp lệ
---     Restore ngay frame sau → người chơi không thấy giật
+-- [4] pSILENT — snap camera 1 frame khi M1/skill
 -- ================================================================
 local function psilentSnap(doAction)
     if not ENABLE_PSILENT or not TGT then
-        doAction()
-        return
+        doAction(); return
     end
     if math.random(1,100) > HIT_CHANCE then
-        doAction()
-        return
+        doAction(); return
     end
     local tc = TGT.Character; if not tc then doAction(); return end
     local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then doAction(); return end
-
-    -- Visible check
     local pred = getPredPos(tr)
     if not isVisible(pred) then doAction(); return end
-
-    -- Lưu camera gốc
-    local origCF = Camera.CFrame
-
-    -- Snap camera về target đúng 1 frame
-    local dir = (pred - Camera.CFrame.Position).Unit
+    local origCF  = Camera.CFrame
+    local dir     = (pred - Camera.CFrame.Position).Unit
     Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
-
-    -- Thực hiện action (click/skill)
     doAction()
-
-    -- Restore camera frame sau
     task.defer(function()
-        pcall(function()
-            Camera.CFrame = origCF
-        end)
+        pcall(function() Camera.CFrame = origCF end)
     end)
 end
 
@@ -282,7 +266,7 @@ LP.CharacterRemoving:Connect(function()
 end)
 
 -- ================================================================
--- [8] HEARTBEAT — target + poll lỗi
+-- [8] HEARTBEAT — target refresh + poll lỗi
 -- ================================================================
 local _lastErrCheck = 0
 local _lastTgtCheck = 0
@@ -371,7 +355,7 @@ task.spawn(function()
             if c then
                 c:SetAttribute("InSafeZone",false)
                 local ff=c:FindFirstChildOfClass("ForceField")
-                if ff then ff:Destroy() end
+                if ff and ff.Name ~= "BountyFF" then ff:Destroy() end
             end
         end)
     end
@@ -379,28 +363,71 @@ end)
 
 -- ================================================================
 -- [11] LOW HEALTH FLY
+--      Đợi character spawn xong
+--      ForceField vô hình khi bay → không mất máu
+--      Giữ cao 900 studs liên tục chống gravity
+--      CharacterAdded reset state
 -- ================================================================
-if LHF_ENABLED then
+local function startLHF()
+    if not LHF_ENABLED then return end
     task.spawn(function()
+        -- Đợi character sẵn sàng
+        while not LP.Character
+        or not LP.Character:FindFirstChild("HumanoidRootPart")
+        or not LP.Character:FindFirstChildOfClass("Humanoid") do
+            task.wait(0.5)
+        end
+
+        local _ff = nil  -- ForceField hiện tại
+
         while task.wait(0.3) do
             pcall(function()
                 local c  = LP.Character; if not c then return end
                 local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
                 local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
+
                 if h.Health <= LOW_HP and not _flying then
                     _flying = true
                     warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên")
+
+                    -- ForceField vô hình để không mất máu
+                    _ff = Instance.new("ForceField")
+                    _ff.Name    = "BountyFF"
+                    _ff.Visible = false
+                    _ff.Parent  = c
+
+                    -- Bay lên tức thì
                     hr.CFrame = CFrame.new(
-                        hr.Position + Vector3.new(math.random(-5,5),800,math.random(-5,5))
+                        hr.Position + Vector3.new(math.random(-5,5), 900, math.random(-5,5))
                     )
-                elseif h.Health >= SAFE_HP and _flying then
-                    _flying = false
-                    warn("✅ Máu hồi "..math.floor(h.Health).." — săn tiếp")
+
+                elseif _flying then
+                    -- Giữ cao liên tục
+                    if hr.Position.Y < 500 then
+                        hr.CFrame = CFrame.new(hr.Position.X, 900, hr.Position.Z)
+                    end
+
+                    -- Máu hồi đủ → xuống
+                    if h.Health >= SAFE_HP then
+                        _flying = false
+                        warn("✅ Máu hồi "..math.floor(h.Health).." — săn tiếp")
+                        if _ff and _ff.Parent then _ff:Destroy() end
+                        _ff = nil
+                    end
                 end
             end)
         end
     end)
 end
+
+startLHF()
+
+-- Reset khi character respawn
+LP.CharacterAdded:Connect(function()
+    _flying = false
+    task.wait(1)
+    startLHF()
+end)
 
 -- ================================================================
 -- [12] SPAM SKILL
@@ -454,6 +481,6 @@ if ENABLE_M1 then
     end)
 end
 
-print("✅ Bounty.lua v2 OK | pSilent="..tostring(ENABLE_PSILENT)
-    .." | HitChance="..HIT_CHANCE.."%"
-    .." | LHF="..tostring(LHF_ENABLED))
+print("✅ Bounty.lua OK | pSilent="..tostring(ENABLE_PSILENT)
+    .." | LHF="..tostring(LHF_ENABLED)
+    .." | HitChance="..HIT_CHANCE.."%")
