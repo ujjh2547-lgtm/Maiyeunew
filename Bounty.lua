@@ -1,5 +1,6 @@
 -- ================================================================
---  Bounty.lua — MAIN SCRIPT
+--  Bounty.lua — MAIN SCRIPT (upload lên GitHub raw)
+--  Đọc config từ getgenv().BountyExtra do script config set sẵn
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -7,7 +8,6 @@ local RunService = game:GetService("RunService")
 local TpSvc      = game:GetService("TeleportService")
 local GuiSvc     = game:GetService("GuiService")
 local VIM        = game:GetService("VirtualInputManager")
-local UIS        = game:GetService("UserInputService")
 local LP         = Players.LocalPlayer
 
 -- ================================================================
@@ -21,11 +21,17 @@ local ENABLE_AUTOSKILL = (CFG["Auto Skill"] or {})["Enabled"] ~= false
 local ENABLE_AUTOHOP   = CFG["Auto server hop"]      ~= false
 local ENABLE_GUI       = CFG["Gui"]                  ~= false
 
-local SKILL_Z = (CFG["Auto Skill"] or {})["Z"] ~= false
-local SKILL_X = (CFG["Auto Skill"] or {})["X"] ~= false
-local SKILL_C = (CFG["Auto Skill"] or {})["C"] ~= false
-local SKILL_V = (CFG["Auto Skill"] or {})["V"] == true
-local SKILL_F = (CFG["Auto Skill"] or {})["F"] ~= false
+local SKILL_Z     = (CFG["Auto Skill"] or {})["Z"]     ~= false
+local SKILL_X     = (CFG["Auto Skill"] or {})["X"]     ~= false
+local SKILL_C     = (CFG["Auto Skill"] or {})["C"]     ~= false
+local SKILL_V     = (CFG["Auto Skill"] or {})["V"]     == true
+local SKILL_F     = (CFG["Auto Skill"] or {})["F"]     ~= false
+local SKILL_DELAY = (CFG["Auto Skill"] or {})["Delay"] or 0.3
+
+local LHF         = CFG["Low Health Fly"] or {}
+local LHF_ENABLED = LHF["Enabled"]    ~= false
+local LOW_HP      = LHF["lowHealth"]  or 5600
+local SAFE_HP     = LHF["safeHealth"] or 6600
 
 local M1_WHITELIST = CFG["M1"] or {
     ["kitsune"]=true, ["t-rex"]=true,  ["dragon"]=true,
@@ -48,7 +54,7 @@ local function canM1(char)
 end
 
 -- ================================================================
--- [3] M1 CLICK — dùng mouse1click() thay mousemoveabs
+-- [3] M1 CLICK
 -- ================================================================
 local _m1Last   = 0
 local M1_MIN_CD = 0.22
@@ -59,7 +65,6 @@ local function doM1(sx, sy)
     _m1Last = now
     task.spawn(function()
         pcall(function()
-            -- Thử mouse native
             mousemoveabs(sx + math.random(-3,3), sy + math.random(-3,3))
             mouse1click()
         end)
@@ -67,16 +72,14 @@ local function doM1(sx, sy)
 end
 
 -- ================================================================
--- [4] PRESS KEY — dùng nhiều phương pháp fallback
+-- [4] PRESS KEY — VIM + fallback keypress
 -- ================================================================
 local function pressKey(keyCode)
     pcall(function()
-        -- Phương pháp 1: VIM
         VIM:SendKeyEvent(true,  keyCode, false, nil)
         task.wait(0.05)
         VIM:SendKeyEvent(false, keyCode, false, nil)
     end)
-    -- Phương pháp 2: keypress/keyrelease nếu executor hỗ trợ
     pcall(function()
         local key = keyCode.Name:lower()
         keypress(key)
@@ -86,7 +89,7 @@ local function pressKey(keyCode)
 end
 
 -- ================================================================
--- [5] AUTO HOP — fix detect tiếng Việt "Mã Lỗi: 773"
+-- [5] AUTO HOP — fix detect tiếng Việt "Mã Lỗi"
 -- ================================================================
 local _hopLock = false
 local _lastHop = 0
@@ -115,7 +118,7 @@ local function getNewServer()
             and sv.playing <= 10
             and sv.maxPlayers >= sv.playing then
                 local score = (sv.ping or 999) + (sv.playing * 10)
-                if score < bestScore then bestScore=score; best=sv.id end
+                if score < bestScore then bestScore = score; best = sv.id end
             end
         end
         return best
@@ -128,11 +131,11 @@ local function hopServer(delaySec)
     if _hopLock then return end
     if tick() - _lastHop < HOP_MIN then return end
     _hopLock = true
-    warn("🔄 Đang hop server sau " .. (delaySec or 5) .. "s...")
+    warn("🔄 Hop server sau " .. (delaySec or 5) .. "s...")
     task.spawn(function()
         task.wait(delaySec or 5)
         local w = 0
-        while not charReady() and w < 15 do task.wait(0.5); w=w+0.5 end
+        while not charReady() and w < 15 do task.wait(0.5); w = w + 0.5 end
         task.wait(1.5)
         _lastHop = tick()
         local newSv = getNewServer()
@@ -149,28 +152,32 @@ local function hopServer(delaySec)
             warn("⚠️ Không lấy được server list, dùng Teleport thường...")
             pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
         end
-        task.wait(20); _hopLock = false
+        task.wait(20)
+        _hopLock = false
     end)
 end
 
--- Detect 773 — check cả tiếng Việt lẫn tiếng Anh
-local function check773(m)
-    m = string.lower(m or "")
-    return string.find(m, "773")
-        or string.find(m, "reconnect")
-        or string.find(m, "disconnect")
-        or string.find(m, "m%u00e3 l%u1ed7i")  -- "mã lỗi" encoded
-        or string.find(m, "ma loi")
-        or string.find(m, "k%u1ebft n%u1ed1i")  -- "kết nối"
+-- Detect lỗi — check số mã trực tiếp vì tiếng Việt encoding hay bị sai
+local function checkError(m)
+    if not m or m == "" then return nil end
+    -- Check 773
+    if string.find(m, "773")
+    or string.find(m, "reconnect")
+    or string.find(m, "disconnect")
+    or string.find(m, "k.t n.i")       -- "kết nối" mọi encoding
+    or string.find(m, "th.nh c.ng") then
+        return "773"
+    end
+    -- Check 267
+    if string.find(m, "267")
+    or string.find(m, "Security")
+    or string.find(m, "kicked") then
+        return "267"
+    end
+    return nil
 end
 
-local function check267(m)
-    m = string.lower(m or "")
-    return string.find(m, "267")
-        or string.find(m, "security")
-        or string.find(m, "kicked")
-end
-
+-- Event chính
 TpSvc.TeleportInitFailed:Connect(function(plr, reason)
     if plr ~= LP then return end
     warn("TeleportInitFailed:", reason)
@@ -179,33 +186,28 @@ end)
 
 GuiSvc.ErrorMessageChanged:Connect(function()
     local m = GuiSvc:GetErrorMessage() or ""
-    warn("ErrorMessage:", m)  -- log để debug
-    if check267(m) then
-        hopServer(15 + math.random()*10)
-    elseif check773(m) then
-        hopServer(5 + math.random()*3)
-    end
+    warn("ErrorMessage:", m)
+    local code = checkError(m)
+    if code == "267" then hopServer(15 + math.random()*10)
+    elseif code == "773" then hopServer(5 + math.random()*3) end
 end)
 
--- Backup poll mỗi 1.5s — quan trọng vì ErrorMessageChanged hay miss
-local _lastErrCheck = 0
+-- Backup poll mỗi 1s — quan trọng vì ErrorMessageChanged hay miss trên mobile
+local _lastPoll = 0
 RunService.Heartbeat:Connect(function()
     local now = tick()
-    if now - _lastErrCheck < 1.5 then return end
-    _lastErrCheck = now
+    if now - _lastPoll < 1 then return end
+    _lastPoll = now
     pcall(function()
         local m = GuiSvc:GetErrorMessage() or ""
-        if m ~= "" then
-            warn("Poll ErrorMessage:", m)
-            if check267(m) then
-                hopServer(15 + math.random()*10)
-            elseif check773(m) then
-                hopServer(5 + math.random()*3)
-            end
-        end
+        if m == "" then return end
+        local code = checkError(m)
+        if code == "267" then hopServer(15 + math.random()*10)
+        elseif code == "773" then hopServer(5 + math.random()*3) end
     end)
 end)
 
+-- Backup: character không spawn lại trong 12s → hop
 LP.CharacterRemoving:Connect(function()
     task.spawn(function()
         task.wait(12)
@@ -214,7 +216,7 @@ LP.CharacterRemoving:Connect(function()
 end)
 
 -- ================================================================
--- [6] GUI FPS/PING
+-- [6] GUI FPS / PING / UPTIME
 -- ================================================================
 if ENABLE_GUI then
     local G = Instance.new("ScreenGui")
@@ -222,45 +224,47 @@ if ENABLE_GUI then
     G.Parent = LP:WaitForChild("PlayerGui")
 
     local F = Instance.new("Frame", G)
-    F.Size = UDim2.new(0,185,0,68)
-    F.Position = UDim2.new(0.5,-92.5,0.05,0)
-    F.BackgroundColor3 = Color3.fromRGB(15,15,15)
+    F.Size                   = UDim2.new(0,185,0,68)
+    F.Position               = UDim2.new(0.5,-92.5,0.05,0)
+    F.BackgroundColor3       = Color3.fromRGB(15,15,15)
     F.BackgroundTransparency = 0.1
-    F.BorderSizePixel = 0; F.Visible = false
+    F.BorderSizePixel        = 0
+    F.Visible                = false
     Instance.new("UICorner", F).CornerRadius = UDim.new(0,12)
     local St = Instance.new("UIStroke", F); St.Thickness = 2
 
-    local function lb(sz,pos,txt,fs,bold)
-        local l = Instance.new("TextLabel",F)
-        l.Size=sz; l.Position=pos
-        l.BackgroundTransparency=1
-        l.Text=txt; l.TextSize=fs
-        l.TextXAlignment=Enum.TextXAlignment.Center
-        l.Font=bold and Enum.Font.GothamBold or Enum.Font.GothamSemibold
+    local function lb(sz, pos, txt, fs, bold)
+        local l = Instance.new("TextLabel", F)
+        l.Size = sz; l.Position = pos
+        l.BackgroundTransparency = 1
+        l.Text = txt; l.TextSize = fs
+        l.TextXAlignment = Enum.TextXAlignment.Center
+        l.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamSemibold
         return l
     end
 
-    local TL = lb(UDim2.new(1,0,0,24),UDim2.new(0,0,0,0),"FPS • PING",15,true)
-    local IL = lb(UDim2.new(1,0,0,22),UDim2.new(0,0,0,26),"FPS:60|Ping:0ms",13,false)
-    local UL = lb(UDim2.new(1,0,0,18),UDim2.new(0,0,0,48),"Uptime:00:00:00",12,false)
+    local TL = lb(UDim2.new(1,0,0,24), UDim2.new(0,0,0,0),  "FPS • PING",      15, true)
+    local IL = lb(UDim2.new(1,0,0,22), UDim2.new(0,0,0,26), "FPS:60|Ping:0ms", 13, false)
+    local UL = lb(UDim2.new(1,0,0,18), UDim2.new(0,0,0,48), "Uptime:00:00:00", 12, false)
     TL.TextColor3 = Color3.fromRGB(255,215,0)
     IL.TextColor3 = Color3.fromRGB(255,255,255)
     UL.TextColor3 = Color3.fromRGB(200,200,200)
 
-    local fps=60; local t0=os.clock()
+    local fps = 60; local t0 = os.clock()
     RunService.RenderStepped:Connect(function(dt)
-        if dt>0 then fps=math.floor(1/dt) end
-        local c=Color3.fromHSV((os.clock()%4)/4,.95,1)
-        TL.TextColor3=c; St.Color=c
+        if dt > 0 then fps = math.floor(1/dt) end
+        local c = Color3.fromHSV((os.clock()%4)/4, .95, 1)
+        TL.TextColor3 = c; St.Color = c
     end)
     task.spawn(function()
         while task.wait(0.5) do
-            IL.Text=("FPS:%d|Ping:%dms"):format(fps,math.floor(LP:GetNetworkPing()*1000))
-            local e=os.clock()-t0
-            UL.Text=("Uptime:%02d:%02d:%02d"):format(math.floor(e/3600),math.floor(e%3600/60),math.floor(e%60))
+            IL.Text = ("FPS:%d|Ping:%dms"):format(fps, math.floor(LP:GetNetworkPing()*1000))
+            local e = os.clock() - t0
+            UL.Text = ("Uptime:%02d:%02d:%02d"):format(
+                math.floor(e/3600), math.floor(e%3600/60), math.floor(e%60))
         end
     end)
-    task.delay(0.6,function() F.Visible=true end)
+    task.delay(0.6, function() F.Visible = true end)
 end
 
 -- ================================================================
@@ -270,13 +274,181 @@ task.spawn(function()
     while task.wait(0.5) do
         pcall(function()
             local pg = LP.PlayerGui
-            local d = pg:FindFirstChild("DialogueGui")
-            if d then d.Enabled=false end
-            local q = pg:FindFirstChild("QuestGui")
-            if q then q.Enabled=false end
+            local d = pg:FindFirstChild("DialogueGui"); if d then d.Enabled = false end
+            local q = pg:FindFirstChild("QuestGui");    if q then q.Enabled = false end
             local c = LP.Character
             if c then
-                c:SetAttribute("InSafeZone",false)
+                c:SetAttribute("InSafeZone", false)
+                local ff = c:FindFirstChildOfClass("ForceField")
+                if ff then ff:Destroy() end
+            end
+        end)
+    end
+end)
+
+-- ================================================================
+-- [8] LOW HEALTH FLY — máu thấp bay lên trời, đủ máu xuống săn
+-- ================================================================
+local _flying = false
+
+if LHF_ENABLED then
+    task.spawn(function()
+        while task.wait(0.5) do
+            pcall(function()
+                local c  = LP.Character; if not c then return end
+                local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
+                local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
+
+                if h.Health <= LOW_HP and not _flying then
+                    _flying = true
+                    warn("⚠️ Máu thấp " .. math.floor(h.Health) .. " — bay lên trời đợi hồi máu")
+                    hr.CFrame = CFrame.new(hr.Position + Vector3.new(0, 800, 0))
+
+                elseif h.Health >= SAFE_HP and _flying then
+                    _flying = false
+                    warn("✅ Máu đã hồi " .. math.floor(h.Health) .. " — tiếp tục săn")
+                end
+            end)
+        end
+    end)
+end
+
+-- ================================================================
+-- [9] TARGET SYSTEM
+-- ================================================================
+local TGT    = nil
+local TGT_AT = 0
+
+local function isValid(p)
+    if not p or not p:IsA("Player") then return false end
+    if p == LP then return false end
+    if not Players:FindFirstChild(p.Name) then return false end
+    local c = p.Character; if not c then return false end
+    if not c:FindFirstChild("HumanoidRootPart") then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    if p.Team and LP.Team and p.Team == LP.Team then return false end
+    return true
+end
+
+local function pickTarget()
+    local mc = LP.Character; if not mc then return nil end
+    local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return nil end
+    local best, bd = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isValid(p) then
+            local d = (p.Character.HumanoidRootPart.Position - mr.Position).Magnitude
+            if d < bd then bd = d; best = p end
+        end
+    end
+    return best
+end
+
+local function tgtDist()
+    if not TGT or not TGT.Character then return math.huge end
+    local mc = LP.Character; if not mc then return math.huge end
+    local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return math.huge end
+    local tr = TGT.Character:FindFirstChild("HumanoidRootPart"); if not tr then return math.huge end
+    return (tr.Position - mr.Position).Magnitude
+end
+
+-- ================================================================
+-- [10] AIMLOCK — khóa camera cứng vào target
+-- ================================================================
+local _lastAim = 0
+
+local function doAimlock()
+    if not ENABLE_AIMBOT then return end
+    local now = tick()
+    if now - _lastAim < 0.05 then return end
+    _lastAim = now
+    pcall(function()
+        local mc = LP.Character; if not mc then return end
+        local mh = mc:FindFirstChildOfClass("Humanoid")
+        if not mh or mh.Health <= 0 then return end
+        if _flying then return end  -- không aim khi đang bay tránh đòn
+
+        local dist = tgtDist()
+        if not TGT or not isValid(TGT) or (now - TGT_AT > 4) or dist > 100 then
+            TGT = pickTarget(); TGT_AT = now
+        end
+        if not TGT then return end
+
+        local tc = TGT.Character; if not tc then return end
+        local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
+        local cam = workspace.CurrentCamera; if not cam then return end
+
+        local vel      = tr.AssemblyLinearVelocity
+        local speed    = vel.Magnitude
+        local tDist    = (tr.Position - cam.CFrame.Position).Magnitude
+        local predMult = 0.88 + math.clamp(speed/200, 0, 0.45)
+        local pred     = tr.Position + vel*(tDist/260)*predMult + Vector3.new(0, 2.5, 0)
+        local dir = (pred - cam.CFrame.Position).Unit
+        cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
+    end)
+end
+
+RunService.Heartbeat:Connect(doAimlock)
+
+-- ================================================================
+-- [11] SPAM SKILL
+-- ================================================================
+if ENABLE_AUTOSKILL then
+    task.spawn(function()
+        while task.wait(SKILL_DELAY) do
+            if _flying then continue end
+            if not TGT or not isValid(TGT) then continue end
+            pcall(function()
+                local mc = LP.Character; if not mc then return end
+                local mh = mc:FindFirstChildOfClass("Humanoid")
+                if not mh or mh.Health <= 0 then return end
+                if tgtDist() > 80 then return end
+
+                doAimlock()
+                if SKILL_Z then pressKey(Enum.KeyCode.Z); task.wait(0.08) end
+                if SKILL_X then pressKey(Enum.KeyCode.X); task.wait(0.08) end
+                if SKILL_C then pressKey(Enum.KeyCode.C); task.wait(0.08) end
+                if SKILL_F then pressKey(Enum.KeyCode.F); task.wait(0.08) end
+                if SKILL_V then pressKey(Enum.KeyCode.V); task.wait(0.08) end
+            end)
+        end
+    end)
+end
+
+-- ================================================================
+-- [12] SPAM M1
+-- ================================================================
+if ENABLE_M1 then
+    task.spawn(function()
+        while task.wait(0.05) do
+            if _flying then continue end
+            if not TGT or not isValid(TGT) then continue end
+            pcall(function()
+                local mc = LP.Character; if not mc then return end
+                local mh = mc:FindFirstChildOfClass("Humanoid")
+                if not mh or mh.Health <= 0 then return end
+                if not canM1(mc) then return end
+                if tgtDist() > 25 then return end
+
+                local tc = TGT.Character; if not tc then return end
+                local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
+                local cam = workspace.CurrentCamera; if not cam then return end
+
+                doAimlock()
+
+                local sp, onScreen = cam:WorldToViewportPoint(tr.Position)
+                if not onScreen or sp.Z <= 0 then return end
+
+                local vp = cam.ViewportSize
+                local cx = math.clamp(sp.X + math.random(-3,3), 1, vp.X-1)
+                local cy = math.clamp(sp.Y + math.random(-3,3), 1, vp.Y-1)
+                doM1(cx, cy)
+            end)
+        end
+    end)
+end
+
+print("✅ Bounty.lua loaded — Aimlock + Skill + M1 + AutoHop + LowHealthFly active")tribute("InSafeZone",false)
                 local ff = c:FindFirstChildOfClass("ForceField")
                 if ff then ff:Destroy() end
             end
