@@ -1,9 +1,8 @@
 -- ================================================================
---  Bounty.lua — MAIN SCRIPT
---  AIM: pSilent Raycast (không xoay camera, đạn/M1 trúng head)
---  Hit Chance 85%, Visible Check, Team Check, Prediction
---  M1: random delay + humanize, CPS 12-18, không spam mù
---  Giảm tối đa 267/773
+--  Bounty.lua — MAIN SCRIPT v2
+--  pSilent: dùng CFrame redirect thay FindPartOnRay deprecated
+--  M1 humanized, burst control, CPS 12-18
+--  Auto Hop 773/267, Low Health Fly
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -20,7 +19,7 @@ local Camera     = workspace.CurrentCamera
 local CFG       = getgenv().BountyExtra or {}
 local SKILL_CFG = CFG["Auto Skill"]    or {}
 
-local ENABLE_PSILENT   = CFG["AimSilent"]       ~= false  -- pSilent mặc định bật
+local ENABLE_PSILENT   = CFG["AimSilent"]       ~= false
 local ENABLE_M1        = CFG["M1 click"]        ~= false
 local ENABLE_AUTOSKILL = SKILL_CFG["Enabled"]   ~= false
 local ENABLE_AUTOHOP   = CFG["Auto server hop"] ~= false
@@ -38,11 +37,8 @@ local LHF_ENABLED = (not DISABLE_HF) and (CFG["lowHealthFly"] == true)
 local LOW_HP      = CFG["lowHealth"]  or 5600
 local SAFE_HP     = CFG["safeHealth"] or 6600
 
--- pSilent config
-local HIT_CHANCE    = 87   -- 80-92%, đủ mạnh mà ít bị detect
-local MAX_DIST      = 150  -- khoảng cách tối đa aim
-local VISIBLE_CHECK = true -- chỉ aim khi nhìn thấy target
-local PRED_FACTOR   = 0.88 -- prediction factor
+local HIT_CHANCE = 87
+local MAX_DIST   = 150
 
 local M1_WHITELIST = CFG["M1"] or {
     ["kitsune"]=true, ["t-rex"]=true, ["dragon"]=true,
@@ -93,86 +89,71 @@ local function tgtDist()
     return (tr.Position - mr.Position).Magnitude
 end
 
--- ================================================================
--- [4] pSILENT RAYCAST
---     Không xoay camera — override raycast để đạn/M1 trúng target
---     Hit Chance 87% → 13% miss để giống người thật
--- ================================================================
-local _psilentActive = false
-local _psilentTarget = nil
-
 local function getPredPos(tr)
     local vel      = tr.AssemblyLinearVelocity
     local tD       = (tr.Position - Camera.CFrame.Position).Magnitude
-    local predMult = PRED_FACTOR + math.clamp(vel.Magnitude/200, 0, 0.45)
+    local predMult = 0.88 + math.clamp(vel.Magnitude/200, 0, 0.45)
     return tr.Position
         + vel * (tD/260) * predMult
-        + Vector3.new(0, 2.8, 0)  -- aim lên đầu
+        + Vector3.new(0, 2.8, 0)
 end
 
-local function isVisible(tr)
-    if not VISIBLE_CHECK then return true end
+local function isVisible(pos)
     local mc = LP.Character; if not mc then return false end
     local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return false end
     local origin = mr.Position + Vector3.new(0,2,0)
-    local ray    = Ray.new(origin, (tr.Position - origin).Unit * MAX_DIST)
-    local hit    = workspace:FindPartOnRayWithIgnoreList(ray, {mc, workspace.CurrentCamera})
-    if not hit then return true end
-    -- Kiểm tra hit thuộc character của target không
+    local dir    = (pos - origin)
+    local result = workspace:Raycast(origin, dir, RaycastParams.new())
+    if not result then return true end
     local tc = TGT and TGT.Character
-    if tc and hit:IsDescendantOf(tc) then return true end
-    return false
-end
-
--- Hook workspace.FindPartOnRay để redirect đạn về target (pSilent core)
-local _origFindPartOnRay = workspace.FindPartOnRay
-local _origFindPartOnRayWithIgnoreList = workspace.FindPartOnRayWithIgnoreList
-local _origFindPartOnRayWithWhitelist  = workspace.FindPartOnRayWithWhitelist
-
-local function psilentHook(ray, ...)
-    if not _psilentActive or not _psilentTarget then
-        return _origFindPartOnRay(workspace, ray, ...)
-    end
-    -- Hit Chance: không phải lúc nào cũng trúng
-    if math.random(1, 100) > HIT_CHANCE then
-        return _origFindPartOnRay(workspace, ray, ...)
-    end
-    local tc = _psilentTarget.Character
-    if not tc then return _origFindPartOnRay(workspace, ray, ...) end
-    local tr = tc:FindFirstChild("HumanoidRootPart")
-    if not tr then return _origFindPartOnRay(workspace, ray, ...) end
-    -- Redirect: trả về HumanoidRootPart của target thay vì hit thật
-    local head = tc:FindFirstChild("Head") or tr
-    return head, getPredPos(tr)
-end
-
-local function psilentHookIgnore(ray, ignoreList, ...)
-    if not _psilentActive or not _psilentTarget then
-        return _origFindPartOnRayWithIgnoreList(workspace, ray, ignoreList, ...)
-    end
-    if math.random(1, 100) > HIT_CHANCE then
-        return _origFindPartOnRayWithIgnoreList(workspace, ray, ignoreList, ...)
-    end
-    local tc = _psilentTarget.Character
-    if not tc then return _origFindPartOnRayWithIgnoreList(workspace, ray, ignoreList, ...) end
-    local tr = tc:FindFirstChild("HumanoidRootPart")
-    if not tr then return _origFindPartOnRayWithIgnoreList(workspace, ray, ignoreList, ...) end
-    local head = tc:FindFirstChild("Head") or tr
-    return head, getPredPos(tr)
-end
-
-if ENABLE_PSILENT then
-    workspace.FindPartOnRay                  = psilentHook
-    workspace.FindPartOnRayWithIgnoreList    = psilentHookIgnore
-    workspace.FindPartOnRayWithWhitelist     = psilentHookIgnore
+    return tc and result.Instance:IsDescendantOf(tc)
 end
 
 -- ================================================================
--- [5] M1 HUMANIZED — random delay, CPS 12-18, không spam mù
+-- [4] pSILENT — CFrame snap 1 frame khi M1/skill
+--     Camera snap về target đúng lúc click → server nhận hit hợp lệ
+--     Restore ngay frame sau → người chơi không thấy giật
+-- ================================================================
+local function psilentSnap(doAction)
+    if not ENABLE_PSILENT or not TGT then
+        doAction()
+        return
+    end
+    if math.random(1,100) > HIT_CHANCE then
+        doAction()
+        return
+    end
+    local tc = TGT.Character; if not tc then doAction(); return end
+    local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then doAction(); return end
+
+    -- Visible check
+    local pred = getPredPos(tr)
+    if not isVisible(pred) then doAction(); return end
+
+    -- Lưu camera gốc
+    local origCF = Camera.CFrame
+
+    -- Snap camera về target đúng 1 frame
+    local dir = (pred - Camera.CFrame.Position).Unit
+    Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
+
+    -- Thực hiện action (click/skill)
+    doAction()
+
+    -- Restore camera frame sau
+    task.defer(function()
+        pcall(function()
+            Camera.CFrame = origCF
+        end)
+    end)
+end
+
+-- ================================================================
+-- [5] M1 HUMANIZED
 -- ================================================================
 local _m1Last    = 0
-local _m1Burst   = 0     -- đếm số M1 liên tiếp
-local _m1BurstCD = 0     -- cooldown sau burst
+local _m1Burst   = 0
+local _m1BurstCD = 0
 
 local function canM1(char)
     if not ENABLE_M1 then return false end
@@ -187,35 +168,22 @@ end
 
 local function doM1(sx, sy)
     local now = tick()
-    -- Burst control: sau 6-8 M1 liên tiếp → nghỉ 0.4-0.8s
     if now < _m1BurstCD then return end
-    -- Random CPS 12-18 → delay 55-83ms
-    local delay = 0.055 + math.random() * 0.028
+    local delay = 0.055 + math.random()*0.028
     if now - _m1Last < delay then return end
-
     _m1Last  = now
     _m1Burst = _m1Burst + 1
-
-    -- Sau 6-8 M1 → burst cooldown
-    if _m1Burst >= math.random(6, 8) then
+    if _m1Burst >= math.random(6,8) then
         _m1Burst   = 0
-        _m1BurstCD = now + 0.4 + math.random() * 0.4
+        _m1BurstCD = now + 0.4 + math.random()*0.4
     end
-
-    -- Bật pSilent trong lúc click
-    _psilentActive = ENABLE_PSILENT
-    _psilentTarget = TGT
-
-    task.spawn(function()
+    psilentSnap(function()
         pcall(function()
             mousemoveabs(sx + math.random(-4,4), sy + math.random(-4,4))
             mouse1press()
             task.wait(0.018 + math.random()*0.012)
             mouse1release()
         end)
-        -- Tắt pSilent sau khi click xong
-        task.wait(0.05)
-        _psilentActive = false
     end)
 end
 
@@ -223,16 +191,13 @@ end
 -- [6] PRESS KEY
 -- ================================================================
 local function pressKey(keyCode)
-    -- Bật pSilent khi dùng skill
-    _psilentActive = ENABLE_PSILENT
-    _psilentTarget = TGT
-    pcall(function()
-        VIM:SendKeyEvent(true,  keyCode, false, nil)
-        task.wait(0.05)
-        VIM:SendKeyEvent(false, keyCode, false, nil)
+    psilentSnap(function()
+        pcall(function()
+            VIM:SendKeyEvent(true,  keyCode, false, nil)
+            task.wait(0.05)
+            VIM:SendKeyEvent(false, keyCode, false, nil)
+        end)
     end)
-    task.wait(0.05)
-    _psilentActive = false
 end
 
 -- ================================================================
@@ -274,11 +239,11 @@ local function hopServer(delay)
     if _hopLock then return end
     if tick() - _lastHop < 20 then return end
     _hopLock = true
-    warn("🔄 Hop server sau " .. (delay or 3) .. "s")
+    warn("🔄 Hop server sau "..(delay or 3).."s")
     task.spawn(function()
         task.wait(delay or 3)
         local w = 0
-        while not charReady() and w < 15 do task.wait(0.5); w = w + 0.5 end
+        while not charReady() and w < 15 do task.wait(0.5); w=w+0.5 end
         task.wait(0.5)
         _lastHop = tick()
         local sv = getNewServer()
@@ -302,7 +267,6 @@ end
 
 TpSvc.TeleportInitFailed:Connect(function(plr)
     if plr ~= LP then return end
-    warn("TeleportInitFailed — reset hop")
     _hopLock = false; _lastHop = 0
     hopServer(2)
 end)
@@ -318,7 +282,7 @@ LP.CharacterRemoving:Connect(function()
 end)
 
 -- ================================================================
--- [8] HEARTBEAT — target refresh + poll lỗi
+-- [8] HEARTBEAT — target + poll lỗi
 -- ================================================================
 local _lastErrCheck = 0
 local _lastTgtCheck = 0
@@ -326,7 +290,6 @@ local _lastTgtCheck = 0
 RunService.Heartbeat:Connect(function()
     local now = tick()
 
-    -- Poll lỗi 0.5s
     if now - _lastErrCheck >= 0.5 then
         _lastErrCheck = now
         pcall(function()
@@ -341,7 +304,6 @@ RunService.Heartbeat:Connect(function()
         end)
     end
 
-    -- Refresh target 4s
     if now - _lastTgtCheck >= 0.5 then
         _lastTgtCheck = now
         if not TGT or not isValid(TGT) or tgtDist() > MAX_DIST then
@@ -373,7 +335,7 @@ if ENABLE_GUI then
         l.Font=bold and Enum.Font.GothamBold or Enum.Font.GothamSemibold
         return l
     end
-    local TL=lb(UDim2.new(1,0,0,24),UDim2.new(0,0,0,0),"pSilent ACTIVE",15,true)
+    local TL=lb(UDim2.new(1,0,0,24),UDim2.new(0,0,0,0),"pSilent ON",15,true)
     local IL=lb(UDim2.new(1,0,0,22),UDim2.new(0,0,0,26),"FPS:60|Ping:0ms",13,false)
     local UL=lb(UDim2.new(1,0,0,18),UDim2.new(0,0,0,48),"Uptime:00:00:00",12,false)
     TL.TextColor3=Color3.fromRGB(255,215,0)
@@ -441,7 +403,7 @@ if LHF_ENABLED then
 end
 
 -- ================================================================
--- [12] SPAM SKILL — pSilent bật trong lúc dùng skill
+-- [12] SPAM SKILL
 -- ================================================================
 if ENABLE_AUTOSKILL then
     task.spawn(function()
@@ -464,7 +426,7 @@ if ENABLE_AUTOSKILL then
 end
 
 -- ================================================================
--- [13] SPAM M1 — humanized, burst control, pSilent
+-- [13] SPAM M1
 -- ================================================================
 if ENABLE_M1 then
     task.spawn(function()
@@ -479,10 +441,8 @@ if ENABLE_M1 then
                 if tgtDist() > 25 then return end
                 local tc=TGT.Character; if not tc then return end
                 local tr=tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
-                -- Dùng viewport để lấy tọa độ click
-                local sp,onScreen = Camera:WorldToViewportPoint(
-                    ENABLE_PSILENT and getPredPos(tr) or tr.Position
-                )
+                local pred = ENABLE_PSILENT and getPredPos(tr) or tr.Position
+                local sp,onScreen = Camera:WorldToViewportPoint(pred)
                 if not onScreen or sp.Z<=0 then return end
                 local vp=Camera.ViewportSize
                 doM1(
@@ -494,6 +454,6 @@ if ENABLE_M1 then
     end)
 end
 
-print("✅ Bounty.lua OK | pSilent="..tostring(ENABLE_PSILENT)
+print("✅ Bounty.lua v2 OK | pSilent="..tostring(ENABLE_PSILENT)
     .." | HitChance="..HIT_CHANCE.."%"
     .." | LHF="..tostring(LHF_ENABLED))
