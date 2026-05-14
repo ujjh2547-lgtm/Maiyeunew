@@ -1,7 +1,11 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT
---  lowHealthFly = true  → Bounty.lua lo bay, Bountynew HealthFly tắt
---  lowHealthFly = false → Bountynew lo HealthFly, Bounty.lua không bay
+--  Cải tiến:
+--  - Load song song với Bountynew, không cần delay
+--  - Bay lên trời tức thì (không wait)
+--  - Auto hop 773/267 mạnh hơn: poll 0.5s + TeleportInitFailed
+--  - disableHealthFly = true → tắt cả hai ngưỡng máu
+--  - Giảm 267: không dùng Race V4, trans, skill V
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -10,6 +14,16 @@ local TpSvc      = game:GetService("TeleportService")
 local GuiSvc     = game:GetService("GuiService")
 local VIM        = game:GetService("VirtualInputManager")
 local LP         = Players.LocalPlayer
+
+-- Đợi character sẵn sàng trước khi bắt đầu
+local function waitChar()
+    while not LP.Character
+    or not LP.Character:FindFirstChild("HumanoidRootPart")
+    or not LP.Character:FindFirstChildOfClass("Humanoid") do
+        task.wait(0.1)
+    end
+    return LP.Character
+end
 
 -- ================================================================
 -- [1] ĐỌC CONFIG
@@ -31,12 +45,14 @@ local SKILL_V     = SKILL_CFG["V"]     == true
 local SKILL_F     = SKILL_CFG["F"]     ~= false
 local SKILL_DELAY = SKILL_CFG["Delay"] or 0.3
 
--- lowHealthFly: đọc từ BountyExtra
--- true  = Bounty.lua xử lý bay, Bountynew đã bị vô hiệu (lowHealth=0)
--- false = Bountynew xử lý, Bounty.lua bỏ qua
-local LHF_ENABLED = CFG["lowHealthFly"] == true
-local LOW_HP      = CFG["lowHealth"]    or 5600
-local SAFE_HP     = CFG["safeHealth"]   or 6600
+-- Health Fly logic:
+-- disableHealthFly=true → tắt hoàn toàn
+-- lowHealthFly=true     → Bounty.lua lo bay
+-- lowHealthFly=false    → Bountynew lo (Bounty.lua bỏ qua)
+local DISABLE_HF  = CFG["disableHealthFly"] == true
+local LHF_ENABLED = (not DISABLE_HF) and (CFG["lowHealthFly"] == true)
+local LOW_HP      = CFG["lowHealth"]  or 5600
+local SAFE_HP     = CFG["safeHealth"] or 6600
 
 local M1_WHITELIST = CFG["M1"] or {
     ["kitsune"]=true, ["t-rex"]=true, ["dragon"]=true,
@@ -99,7 +115,7 @@ local function pressKey(keyCode)
 end
 
 -- ================================================================
--- [5] AUTO HOP
+-- [5] AUTO HOP — mạnh hơn: poll 0.5s + event + CharacterRemoving
 -- ================================================================
 local _hopLock = false
 local _lastHop = 0
@@ -134,12 +150,18 @@ local function hopServer(delay)
         task.wait(delay or 5)
         local w = 0
         while not charReady() and w < 15 do task.wait(0.5); w = w + 0.5 end
-        task.wait(1)
+        task.wait(0.5)
         _lastHop = tick()
         local sv = getNewServer()
         if sv then
-            warn("✅ Tìm được server mới")
-            pcall(function() TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP) end)
+            warn("✅ Server mới: " .. sv)
+            local ok = pcall(function()
+                TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
+            end)
+            if not ok then
+                task.wait(2)
+                pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
+            end
         else
             warn("⚠️ Dùng Teleport thường")
             pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
@@ -149,15 +171,21 @@ local function hopServer(delay)
     end)
 end
 
+-- Event chính
 TpSvc.TeleportInitFailed:Connect(function(plr)
     if plr ~= LP then return end
-    hopServer(5)
+    warn("TeleportInitFailed — hop ngay")
+    _hopLock = false  -- reset lock để hop được ngay
+    hopServer(3)
 end)
 
 LP.CharacterRemoving:Connect(function()
     task.spawn(function()
-        task.wait(12)
-        if not charReady() then hopServer(3) end
+        task.wait(10)
+        if not charReady() then
+            warn("Character không spawn lại — hop")
+            hopServer(2)
+        end
     end)
 end)
 
@@ -201,7 +229,7 @@ local function tgtDist()
 end
 
 -- ================================================================
--- [7] HEARTBEAT — aimlock + check lỗi (1 listener duy nhất)
+-- [7] HEARTBEAT — aimlock + poll lỗi 773/267 mỗi 0.5s
 -- ================================================================
 local _lastErrCheck = 0
 local _lastAim      = 0
@@ -209,19 +237,24 @@ local _lastAim      = 0
 RunService.Heartbeat:Connect(function()
     local now = tick()
 
-    if now - _lastErrCheck >= 1.5 then
+    -- Poll lỗi mỗi 0.5s (nhanh hơn trước 3x)
+    if now - _lastErrCheck >= 0.5 then
         _lastErrCheck = now
         pcall(function()
             local m = GuiSvc:GetErrorMessage() or ""
+            if m == "" then return end
             if string.find(m, "773") or string.find(m, "disconnect")
             or string.find(m, "reconnect") then
-                hopServer(5)
+                warn("Phát hiện 773 — hop")
+                hopServer(3)
             elseif string.find(m, "267") or string.find(m, "Security") then
-                hopServer(15)
+                warn("Phát hiện 267 — hop")
+                hopServer(10)
             end
         end)
     end
 
+    -- Aimlock 20fps
     if ENABLE_AIMBOT and not _flying and now - _lastAim >= 0.05 then
         _lastAim = now
         pcall(function()
@@ -315,21 +348,24 @@ task.spawn(function()
 end)
 
 -- ================================================================
--- [10] LOW HEALTH FLY (Bounty.lua xử lý)
---      Chỉ chạy khi lowHealthFly = true
---      Khi đó Bountynew đã bị vô hiệu (lowHealth=0 trong config)
+-- [10] LOW HEALTH FLY — bay tức thì, không delay
 -- ================================================================
 if LHF_ENABLED then
     task.spawn(function()
-        while task.wait(0.5) do
+        while task.wait(0.3) do  -- check nhanh hơn 0.5s → phản ứng nhanh hơn
             pcall(function()
                 local c  = LP.Character; if not c then return end
                 local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
                 local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
+
                 if h.Health <= LOW_HP and not _flying then
                     _flying = true
-                    warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên trời")
-                    hr.CFrame = CFrame.new(hr.Position + Vector3.new(0, 800, 0))
+                    warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên trời ngay")
+                    -- Bay tức thì, không wait
+                    hr.CFrame = CFrame.new(hr.Position + Vector3.new(
+                        math.random(-5,5), 800, math.random(-5,5)
+                    ))
+
                 elseif h.Health >= SAFE_HP and _flying then
                     _flying = false
                     warn("✅ Máu hồi đủ "..math.floor(h.Health).." — tiếp tục săn")
@@ -391,4 +427,4 @@ if ENABLE_M1 then
     end)
 end
 
-print("✅ Bounty.lua loaded — lowHealthFly=" .. tostring(LHF_ENABLED))
+print("✅ Bounty.lua OK | LowHealthFly=" .. tostring(LHF_ENABLED) .. " | DisableHF=" .. tostring(DISABLE_HF))
