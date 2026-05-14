@@ -1,6 +1,7 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT
 --  pSilent, M1 humanized, Auto Skill, Auto Hop, Low Health Fly
+--  Fix: heal liên tục khi bay, teleport 2000 studs, check 0.1s
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -110,7 +111,7 @@ local function isVisible(pos)
 end
 
 -- ================================================================
--- [4] pSILENT — snap camera 1 frame khi M1/skill
+-- [4] pSILENT
 -- ================================================================
 local function psilentSnap(doAction)
     if not ENABLE_PSILENT or not TGT then
@@ -266,7 +267,7 @@ LP.CharacterRemoving:Connect(function()
 end)
 
 -- ================================================================
--- [8] HEARTBEAT — target refresh + poll lỗi
+-- [8] HEARTBEAT — target + poll lỗi
 -- ================================================================
 local _lastErrCheck = 0
 local _lastTgtCheck = 0
@@ -355,7 +356,7 @@ task.spawn(function()
             if c then
                 c:SetAttribute("InSafeZone",false)
                 local ff=c:FindFirstChildOfClass("ForceField")
-                if ff and ff.Name ~= "BountyFF" then ff:Destroy() end
+                if ff then ff:Destroy() end
             end
         end)
     end
@@ -363,56 +364,64 @@ end)
 
 -- ================================================================
 -- [11] LOW HEALTH FLY
---      Đợi character spawn xong
---      ForceField vô hình khi bay → không mất máu
---      Giữ cao 900 studs liên tục chống gravity
---      CharacterAdded reset state
+--      Fix chết đột ngột:
+--      - Teleport 2000 studs tức thì
+--      - Heal liên tục khi bay (h.Health = MaxHealth)
+--      - Check 0.1s phản ứng nhanh
+--      - CharacterAdded reset + restart loop
 -- ================================================================
 local function startLHF()
     if not LHF_ENABLED then return end
     task.spawn(function()
-        -- Đợi character sẵn sàng
         while not LP.Character
         or not LP.Character:FindFirstChild("HumanoidRootPart")
         or not LP.Character:FindFirstChildOfClass("Humanoid") do
-            task.wait(0.5)
+            task.wait(0.3)
         end
 
-        local _ff = nil  -- ForceField hiện tại
+        local _maxHP = 0
 
-        while task.wait(0.3) do
+        while task.wait(0.1) do
             pcall(function()
                 local c  = LP.Character; if not c then return end
                 local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
                 local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
 
+                if h.MaxHealth > 0 then _maxHP = h.MaxHealth end
+
                 if h.Health <= LOW_HP and not _flying then
                     _flying = true
-                    warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên")
-
-                    -- ForceField vô hình để không mất máu
-                    _ff = Instance.new("ForceField")
-                    _ff.Name    = "BountyFF"
-                    _ff.Visible = false
-                    _ff.Parent  = c
-
-                    -- Bay lên tức thì
+                    warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên ngay")
+                    -- Heal ngay trước khi bay để không chết trong lúc teleport
+                    pcall(function() h.Health = _maxHP end)
+                    -- Teleport lên 2000 studs
                     hr.CFrame = CFrame.new(
-                        hr.Position + Vector3.new(math.random(-5,5), 900, math.random(-5,5))
+                        hr.Position.X + math.random(-5,5),
+                        2000,
+                        hr.Position.Z + math.random(-5,5)
                     )
+                end
 
-                elseif _flying then
-                    -- Giữ cao liên tục
-                    if hr.Position.Y < 500 then
-                        hr.CFrame = CFrame.new(hr.Position.X, 900, hr.Position.Z)
+                if _flying then
+                    -- Heal liên tục khi máu xuống dưới 30% maxHP
+                    -- (dame server vẫn tính dù đã bay lên)
+                    if _maxHP > 0 and h.Health < _maxHP * 0.3 then
+                        pcall(function() h.Health = _maxHP end)
                     end
 
-                    -- Máu hồi đủ → xuống
+                    -- Giữ cao liên tục chống gravity
+                    if hr.Position.Y < 1500 then
+                        hr.CFrame = CFrame.new(
+                            hr.Position.X,
+                            2000,
+                            hr.Position.Z
+                        )
+                    end
+
+                    -- Máu hồi đủ → xuống săn
                     if h.Health >= SAFE_HP then
                         _flying = false
                         warn("✅ Máu hồi "..math.floor(h.Health).." — săn tiếp")
-                        if _ff and _ff.Parent then _ff:Destroy() end
-                        _ff = nil
                     end
                 end
             end)
@@ -422,7 +431,6 @@ end
 
 startLHF()
 
--- Reset khi character respawn
 LP.CharacterAdded:Connect(function()
     _flying = false
     task.wait(1)
