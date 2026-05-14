@@ -1,6 +1,13 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT
---  Đọc config từ getgenv().BountyExtra và getgenv().config
+--  Tính năng:
+--  - Aimlock: camera khóa vào target liên tục
+--  - Aim Silent: đạn/skill trúng dù camera không move
+--  - M1 spam
+--  - Auto Skill spam
+--  - Auto Hop 773/267
+--  - Low Health Fly
+--  - GUI FPS/Ping/Uptime
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -14,10 +21,10 @@ local LP         = Players.LocalPlayer
 -- [1] ĐỌC CONFIG
 -- ================================================================
 local CFG       = getgenv().BountyExtra or {}
-local GCFG      = getgenv().config      or {}
 local SKILL_CFG = CFG["Auto Skill"]     or {}
 
 local ENABLE_AIMBOT    = CFG["Aimbot"]          ~= false
+local ENABLE_AIMSILENT = CFG["AimSilent"]       == true
 local ENABLE_M1        = CFG["M1 click"]        ~= false
 local ENABLE_AUTOSKILL = SKILL_CFG["Enabled"]   ~= false
 local ENABLE_AUTOHOP   = CFG["Auto server hop"] ~= false
@@ -30,10 +37,10 @@ local SKILL_V     = SKILL_CFG["V"]     == true
 local SKILL_F     = SKILL_CFG["F"]     ~= false
 local SKILL_DELAY = SKILL_CFG["Delay"] or 0.3
 
--- Low Health Fly đọc từ getgenv().config (cùng chỗ với Bountynew)
-local LHF_ENABLED = true
-local LOW_HP      = GCFG["lowHealth"]  or 5600
-local SAFE_HP     = GCFG["safeHealth"] or 6600
+local DISABLE_HF  = CFG["disableHealthFly"] == true
+local LHF_ENABLED = (not DISABLE_HF) and (CFG["lowHealthFly"] == true)
+local LOW_HP      = CFG["lowHealth"]  or 5600
+local SAFE_HP     = CFG["safeHealth"] or 6600
 
 local M1_WHITELIST = CFG["M1"] or {
     ["kitsune"]=true, ["t-rex"]=true, ["dragon"]=true,
@@ -42,21 +49,15 @@ local M1_WHITELIST = CFG["M1"] or {
 }
 
 -- ================================================================
--- [2] HELPER
+-- [2] STATE
 -- ================================================================
-local _flying = false
+local _flying   = false
+local TGT       = nil
+local TGT_AT    = 0
 
-local function canM1(char)
-    if not ENABLE_M1 then return false end
-    local t = char and char:FindFirstChildOfClass("Tool")
-    if not t then return false end
-    local s = string.lower((t.ToolTip or "").." "..(t.Name or ""))
-    for k in pairs(M1_WHITELIST) do
-        if string.find(s, k, 1, true) then return true end
-    end
-    return false
-end
-
+-- ================================================================
+-- [3] HELPER
+-- ================================================================
 local function charReady()
     local c = LP.Character
     if not c or not c.Parent then return false end
@@ -64,107 +65,6 @@ local function charReady()
     if not h or h.Health <= 0 then return false end
     return c:FindFirstChild("HumanoidRootPart") ~= nil
 end
-
--- ================================================================
--- [3] M1 CLICK
--- ================================================================
-local _m1Last = 0
-
-local function doM1(sx, sy)
-    local now = tick()
-    if now - _m1Last < 0.22 + math.random()*0.05 then return end
-    _m1Last = now
-    task.spawn(function()
-        pcall(function()
-            mousemoveabs(sx + math.random(-3,3), sy + math.random(-3,3))
-            mouse1press()
-            task.wait(0.02)
-            mouse1release()
-        end)
-    end)
-end
-
--- ================================================================
--- [4] PRESS KEY
--- ================================================================
-local function pressKey(keyCode)
-    pcall(function()
-        VIM:SendKeyEvent(true,  keyCode, false, nil)
-        task.wait(0.05)
-        VIM:SendKeyEvent(false, keyCode, false, nil)
-    end)
-end
-
--- ================================================================
--- [5] AUTO HOP
--- ================================================================
-local _hopLock = false
-local _lastHop = 0
-
-local function getNewServer()
-    local ok, sv = pcall(function()
-        local HS   = game:GetService("HttpService")
-        local url  = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
-        local data = HS:JSONDecode(game:HttpGet(url))
-        if not data or not data.data then return nil end
-        local best, bestScore = nil, math.huge
-        for _, s in ipairs(data.data) do
-            if s.id ~= game.JobId
-            and s.playing >= 2 and s.playing <= 10
-            and s.maxPlayers >= s.playing then
-                local score = (s.ping or 999) + s.playing * 10
-                if score < bestScore then bestScore = score; best = s.id end
-            end
-        end
-        return best
-    end)
-    return ok and sv or nil
-end
-
-local function hopServer(delay)
-    if not ENABLE_AUTOHOP then return end
-    if _hopLock then return end
-    if tick() - _lastHop < 20 then return end
-    _hopLock = true
-    warn("🔄 Hop server sau " .. (delay or 5) .. "s")
-    task.spawn(function()
-        task.wait(delay or 5)
-        local w = 0
-        while not charReady() and w < 15 do task.wait(0.5); w = w + 0.5 end
-        task.wait(1)
-        _lastHop = tick()
-        local sv = getNewServer()
-        if sv then
-            warn("✅ Tìm được server mới")
-            pcall(function() TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP) end)
-        else
-            warn("⚠️ Dùng Teleport thường")
-            pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
-        end
-        task.wait(15)
-        _hopLock = false
-    end)
-end
-
-TpSvc.TeleportInitFailed:Connect(function(plr)
-    if plr ~= LP then return end
-    hopServer(5)
-end)
-
-LP.CharacterRemoving:Connect(function()
-    task.spawn(function()
-        task.wait(12)
-        if not charReady() then hopServer(3) end
-    end)
-end)
-
--- ================================================================
--- [6] HEARTBEAT — aimlock + check lỗi (1 listener duy nhất)
--- ================================================================
-local _lastErrCheck = 0
-local _lastAim      = 0
-local TGT           = nil
-local TGT_AT        = 0
 
 local function isValid(p)
     if not p or not p:IsA("Player") then return false end
@@ -199,53 +99,207 @@ local function tgtDist()
     return (tr.Position - mr.Position).Magnitude
 end
 
+local function getPredPos(tr)
+    local cam = workspace.CurrentCamera
+    local vel  = tr.AssemblyLinearVelocity
+    local tD   = (tr.Position - cam.CFrame.Position).Magnitude
+    local pred = tr.Position
+        + vel * (tD/260) * (0.88 + math.clamp(vel.Magnitude/200, 0, 0.45))
+        + Vector3.new(0, 2.5, 0)
+    return pred
+end
+
+local function canM1(char)
+    if not ENABLE_M1 then return false end
+    local t = char and char:FindFirstChildOfClass("Tool")
+    if not t then return false end
+    local s = string.lower((t.ToolTip or "").." "..(t.Name or ""))
+    for k in pairs(M1_WHITELIST) do
+        if string.find(s, k, 1, true) then return true end
+    end
+    return false
+end
+
+-- ================================================================
+-- [4] M1 CLICK
+-- ================================================================
+local _m1Last = 0
+
+local function doM1(sx, sy)
+    local now = tick()
+    if now - _m1Last < 0.22 + math.random()*0.05 then return end
+    _m1Last = now
+    task.spawn(function()
+        pcall(function()
+            mousemoveabs(sx + math.random(-3,3), sy + math.random(-3,3))
+            mouse1press()
+            task.wait(0.02)
+            mouse1release()
+        end)
+    end)
+end
+
+-- ================================================================
+-- [5] PRESS KEY
+-- ================================================================
+local function pressKey(keyCode)
+    pcall(function()
+        VIM:SendKeyEvent(true,  keyCode, false, nil)
+        task.wait(0.05)
+        VIM:SendKeyEvent(false, keyCode, false, nil)
+    end)
+end
+
+-- ================================================================
+-- [6] AUTO HOP — Delta compatible
+-- ================================================================
+local _hopLock = false
+local _lastHop = 0
+
+local function getNewServer()
+    local ok, sv = pcall(function()
+        local HS   = game:GetService("HttpService")
+        local url  = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+        local data = HS:JSONDecode(game:HttpGet(url))
+        if not data or not data.data then return nil end
+        local best, bestScore = nil, math.huge
+        for _, s in ipairs(data.data) do
+            if s.id ~= game.JobId
+            and s.playing >= 2 and s.playing <= 10
+            and s.maxPlayers >= s.playing then
+                local score = (s.ping or 999) + s.playing * 10
+                if score < bestScore then bestScore = score; best = s.id end
+            end
+        end
+        return best
+    end)
+    return ok and sv or nil
+end
+
+local function hopServer(delay)
+    if not ENABLE_AUTOHOP then return end
+    if _hopLock then return end
+    if tick() - _lastHop < 20 then return end
+    _hopLock = true
+    warn("🔄 Hop server sau " .. (delay or 3) .. "s")
+    task.spawn(function()
+        task.wait(delay or 3)
+        local w = 0
+        while not charReady() and w < 15 do task.wait(0.5); w = w + 0.5 end
+        task.wait(0.5)
+        _lastHop = tick()
+        local sv = getNewServer()
+        if sv then
+            warn("✅ Server mới tìm được")
+            local ok = pcall(function()
+                TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
+            end)
+            if not ok then
+                task.wait(2)
+                pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
+            end
+        else
+            warn("⚠️ Teleport thường")
+            pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
+        end
+        task.wait(15)
+        _hopLock = false
+    end)
+end
+
+-- Reset lock ngay khi TeleportInitFailed để hop lại được
+TpSvc.TeleportInitFailed:Connect(function(plr)
+    if plr ~= LP then return end
+    warn("TeleportInitFailed — reset lock, hop lại")
+    _hopLock = false
+    _lastHop = 0
+    hopServer(2)
+end)
+
+LP.CharacterRemoving:Connect(function()
+    task.spawn(function()
+        task.wait(10)
+        if not charReady() then
+            warn("Character không spawn — hop")
+            _hopLock = false
+            hopServer(2)
+        end
+    end)
+end)
+
+-- ================================================================
+-- [7] AIMLOCK + AIM SILENT + POLL LỖI — 1 Heartbeat duy nhất
+-- ================================================================
+local _lastErrCheck = 0
+local _lastAim      = 0
+local _origCF       = nil  -- lưu camera gốc cho Aim Silent
+
 RunService.Heartbeat:Connect(function()
     local now = tick()
 
-    -- Check lỗi 773/267 mỗi 1.5s
-    if now - _lastErrCheck >= 1.5 then
+    -- Poll lỗi 773/267 mỗi 0.5s
+    if now - _lastErrCheck >= 0.5 then
         _lastErrCheck = now
         pcall(function()
             local m = GuiSvc:GetErrorMessage() or ""
-            if string.find(m, "773") or string.find(m, "disconnect")
+            if m == "" then return end
+            if string.find(m, "773")
+            or string.find(m, "disconnect")
             or string.find(m, "reconnect") then
-                hopServer(5)
-            elseif string.find(m, "267") or string.find(m, "Security") then
-                hopServer(15)
+                warn("Phát hiện 773 — hop")
+                _hopLock = false
+                hopServer(2)
+            elseif string.find(m, "267")
+            or string.find(m, "Security") then
+                warn("Phát hiện 267 — hop")
+                _hopLock = false
+                hopServer(8)
             end
         end)
     end
 
-    -- Aimlock 20fps, dừng khi đang flying
-    if ENABLE_AIMBOT and not _flying and now - _lastAim >= 0.05 then
+    -- Refresh target
+    if not TGT or not isValid(TGT) or now - TGT_AT > 4 or tgtDist() > 100 then
+        TGT = pickTarget(); TGT_AT = now
+    end
+
+    -- Aimlock + Aim Silent 20fps
+    if now - _lastAim >= 0.05 then
         _lastAim = now
         pcall(function()
+            if not TGT then return end
             local mc = LP.Character; if not mc then return end
             local mh = mc:FindFirstChildOfClass("Humanoid")
             if not mh or mh.Health <= 0 then return end
-            local dist = tgtDist()
-            if not TGT or not isValid(TGT) or now - TGT_AT > 4 or dist > 100 then
-                TGT = pickTarget(); TGT_AT = now
-            end
-            if not TGT then return end
+            if _flying then return end
+
             local tc = TGT.Character; if not tc then return end
             local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
             local cam = workspace.CurrentCamera; if not cam then return end
-            local vel  = tr.AssemblyLinearVelocity
-            local tD   = (tr.Position - cam.CFrame.Position).Magnitude
-            local pred = tr.Position
-                + vel * (tD/260) * (0.88 + math.clamp(vel.Magnitude/200, 0, 0.45))
-                + Vector3.new(0, 2.5, 0)
-            cam.CFrame = CFrame.new(
-                cam.CFrame.Position,
-                cam.CFrame.Position + (pred - cam.CFrame.Position).Unit
-            )
+
+            local pred = getPredPos(tr)
+            local dir  = (pred - cam.CFrame.Position).Unit
+
+            if ENABLE_AIMSILENT then
+                -- Aim Silent: lưu camera gốc, aim vào target, bắn/skill xong restore
+                _origCF   = cam.CFrame
+                cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
+                -- Restore về camera gốc sau 1 frame
+                task.defer(function()
+                    if _origCF and cam and cam.Parent then
+                        cam.CFrame = _origCF
+                    end
+                end)
+            elseif ENABLE_AIMBOT then
+                -- Aimlock thuần: giữ camera khóa cứng
+                cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
+            end
         end)
     end
 end)
 
 -- ================================================================
--- [7] GUI FPS / PING / UPTIME
+-- [8] GUI FPS / PING / UPTIME
 -- ================================================================
 if ENABLE_GUI then
     local G = Instance.new("ScreenGui")
@@ -291,7 +345,7 @@ if ENABLE_GUI then
 end
 
 -- ================================================================
--- [8] SAFEZONE BYPASS
+-- [9] SAFEZONE BYPASS
 -- ================================================================
 task.spawn(function()
     while task.wait(0.5) do
@@ -310,31 +364,32 @@ task.spawn(function()
 end)
 
 -- ================================================================
--- [9] LOW HEALTH FLY
---     Đọc lowHealth/safeHealth từ getgenv().config
---     cùng nguồn với Bountynew.lua
+-- [10] LOW HEALTH FLY
 -- ================================================================
-task.spawn(function()
-    while task.wait(0.5) do
-        pcall(function()
-            local c  = LP.Character; if not c then return end
-            local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
-            local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
-
-            if h.Health <= LOW_HP and not _flying then
-                _flying = true
-                warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên trời đợi hồi máu")
-                hr.CFrame = CFrame.new(hr.Position + Vector3.new(0, 800, 0))
-            elseif h.Health >= SAFE_HP and _flying then
-                _flying = false
-                warn("✅ Máu hồi đủ "..math.floor(h.Health).." — tiếp tục săn")
-            end
-        end)
-    end
-end)
+if LHF_ENABLED then
+    task.spawn(function()
+        while task.wait(0.3) do
+            pcall(function()
+                local c  = LP.Character; if not c then return end
+                local h  = c:FindFirstChildOfClass("Humanoid"); if not h then return end
+                local hr = c:FindFirstChild("HumanoidRootPart"); if not hr then return end
+                if h.Health <= LOW_HP and not _flying then
+                    _flying = true
+                    warn("⚠️ Máu thấp "..math.floor(h.Health).." — bay lên trời")
+                    hr.CFrame = CFrame.new(
+                        hr.Position + Vector3.new(math.random(-5,5), 800, math.random(-5,5))
+                    )
+                elseif h.Health >= SAFE_HP and _flying then
+                    _flying = false
+                    warn("✅ Máu hồi "..math.floor(h.Health).." — tiếp tục săn")
+                end
+            end)
+        end
+    end)
+end
 
 -- ================================================================
--- [10] SPAM SKILL
+-- [11] SPAM SKILL — dừng khi flying
 -- ================================================================
 if ENABLE_AUTOSKILL then
     task.spawn(function()
@@ -357,7 +412,7 @@ if ENABLE_AUTOSKILL then
 end
 
 -- ================================================================
--- [11] SPAM M1
+-- [12] SPAM M1 — dừng khi flying
 -- ================================================================
 if ENABLE_M1 then
     task.spawn(function()
@@ -385,4 +440,6 @@ if ENABLE_M1 then
     end)
 end
 
-print("✅ Bounty.lua loaded — Aimlock + Skill + M1 + AutoHop + LowHealthFly OK")
+print("✅ Bounty.lua OK | Aimbot="..tostring(ENABLE_AIMBOT)
+    .." | AimSilent="..tostring(ENABLE_AIMSILENT)
+    .." | LHF="..tostring(LHF_ENABLED))
