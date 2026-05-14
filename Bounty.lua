@@ -279,40 +279,82 @@ local function tgtDist()
 end
 
 -- ================================================================
--- [8] AIMBOT
+-- [8] AIMLOCK — khóa camera cứng vào target, không drift
 -- ================================================================
-if ENABLE_AIMBOT then
-    local _lastAim = 0
-    RunService.Heartbeat:Connect(function()
-        local now = tick()
-        if now - _lastAim < 0.125 then return end
-        _lastAim = now
-        pcall(function()
-            local mc = LP.Character; if not mc then return end
-            local mh = mc:FindFirstChildOfClass("Humanoid")
-            if not mh or mh.Health <= 0 then return end
-            local dist = tgtDist()
-            if not TGT or not isValid(TGT) or (now - TGT_AT > 6) or (dist > 80) then
-                TGT = pickTarget(); TGT_AT = now
-            end
-            if not TGT then return end
-            local tc = TGT.Character; if not tc then return end
-            local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
-            local cam = workspace.CurrentCamera; if not cam then return end
-            local vel      = tr.AssemblyLinearVelocity
-            local speed    = vel.Magnitude
-            local predMult = 0.88 + math.clamp(speed/200, 0, 0.4)
-            local tDist    = (tr.Position - cam.CFrame.Position).Magnitude
-            local pred     = tr.Position + vel*(tDist/260)*predMult + Vector3.new(0,2.2,0)
-            local dir = (pred - cam.CFrame.Position).Unit
-            cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
-        end)
+local _lastAim = 0
+
+local function doAimlock()
+    if not ENABLE_AIMBOT then return end
+    local now = tick()
+    if now - _lastAim < 0.05 then return end  -- 20fps, đủ mượt
+    _lastAim = now
+
+    pcall(function()
+        local mc = LP.Character; if not mc then return end
+        local mh = mc:FindFirstChildOfClass("Humanoid")
+        if not mh or mh.Health <= 0 then return end
+
+        -- Refresh target mỗi 4s hoặc khi mất target
+        local dist = tgtDist()
+        if not TGT or not isValid(TGT)
+        or (now - TGT_AT > 4)
+        or dist > 100 then
+            TGT    = pickTarget()
+            TGT_AT = now
+        end
+        if not TGT then return end
+
+        local tc = TGT.Character; if not tc then return end
+        local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
+        local cam = workspace.CurrentCamera; if not cam then return end
+
+        -- Prediction nâng cao: tính theo khoảng cách + tốc độ target
+        local vel      = tr.AssemblyLinearVelocity
+        local speed    = vel.Magnitude
+        local tDist    = (tr.Position - cam.CFrame.Position).Magnitude
+        local predMult = 0.88 + math.clamp(speed / 200, 0, 0.45)
+        local pred     = tr.Position
+            + vel * (tDist / 260) * predMult
+            + Vector3.new(0, 2.5, 0)  -- offset lên đầu
+
+        -- Khóa camera cứng, không lerp
+        local dir = (pred - cam.CFrame.Position).Unit
+        cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
     end)
 end
 
 -- ================================================================
--- [9] M1 LOOP
+-- [9] SPAM SKILL + M1 — chạy song song, không chặn nhau
 -- ================================================================
+
+-- Skill spam loop
+if ENABLE_AUTOSKILL then
+    local SKILL_DELAY = (CFG["Auto Skill"] or {})["Delay"] or 0.3
+
+    task.spawn(function()
+        while task.wait(SKILL_DELAY) do
+            if not TGT or not isValid(TGT) then continue end
+            pcall(function()
+                local mc = LP.Character; if not mc then return end
+                local mh = mc:FindFirstChildOfClass("Humanoid")
+                if not mh or mh.Health <= 0 then return end
+                if tgtDist() > 80 then return end
+
+                -- Aimlock trước khi dùng skill
+                doAimlock()
+
+                -- Spam skill theo thứ tự Z X C F
+                if SKILL_Z then VIM:SendKeyEvent(true,  Enum.KeyCode.Z, false, nil) task.wait(0.05) VIM:SendKeyEvent(false, Enum.KeyCode.Z, false, nil) task.wait(0.08) end
+                if SKILL_X then VIM:SendKeyEvent(true,  Enum.KeyCode.X, false, nil) task.wait(0.05) VIM:SendKeyEvent(false, Enum.KeyCode.X, false, nil) task.wait(0.08) end
+                if SKILL_C then VIM:SendKeyEvent(true,  Enum.KeyCode.C, false, nil) task.wait(0.05) VIM:SendKeyEvent(false, Enum.KeyCode.C, false, nil) task.wait(0.08) end
+                if SKILL_F then VIM:SendKeyEvent(true,  Enum.KeyCode.F, false, nil) task.wait(0.05) VIM:SendKeyEvent(false, Enum.KeyCode.F, false, nil) task.wait(0.08) end
+                if SKILL_V then VIM:SendKeyEvent(true,  Enum.KeyCode.V, false, nil) task.wait(0.05) VIM:SendKeyEvent(false, Enum.KeyCode.V, false, nil) task.wait(0.08) end
+            end)
+        end
+    end)
+end
+
+-- M1 spam loop — chạy độc lập, không phụ thuộc skill loop
 if ENABLE_M1 then
     task.spawn(function()
         while task.wait(0.05) do
@@ -323,18 +365,29 @@ if ENABLE_M1 then
                 if not mh or mh.Health <= 0 then return end
                 if not canM1(mc) then return end
                 if tgtDist() > 25 then return end
+
                 local tc = TGT.Character; if not tc then return end
                 local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
                 local cam = workspace.CurrentCamera; if not cam then return end
+
+                -- Aimlock trước mỗi M1
+                doAimlock()
+
                 local sp, onScreen = cam:WorldToViewportPoint(tr.Position)
                 if not onScreen or sp.Z <= 0 then return end
+
                 local vp = cam.ViewportSize
                 local cx = math.clamp(sp.X + math.random(-3,3), 1, vp.X-1)
                 local cy = math.clamp(sp.Y + math.random(-3,3), 1, vp.Y-1)
+
                 doM1(cx, cy)
             end)
         end
     end)
 end
 
+-- Aimlock heartbeat riêng — giữ camera khóa liên tục kể cả khi không M1/skill
+RunService.Heartbeat:Connect(function()
+    doAimlock()
+end)
 print("✅ Bounty.lua loaded")
