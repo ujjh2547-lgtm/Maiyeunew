@@ -1,8 +1,6 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT VIP
---  Aim: pSilent + Triggerbot + Anti-Detect
---  Menu: Deaths, Kills, Players, CPS, FPS, Ping, Uptime
---  Fix: giảm tối đa 267/268/773
+--  Menu kéo được, Kill tracking đúng, Fix 267/773 mạnh hơn
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -10,7 +8,7 @@ local RunService = game:GetService("RunService")
 local TpSvc      = game:GetService("TeleportService")
 local GuiSvc     = game:GetService("GuiService")
 local VIM        = game:GetService("VirtualInputManager")
-local Stats      = game:GetService("Stats")
+local UIS        = game:GetService("UserInputService")
 local LP         = Players.LocalPlayer
 local Camera     = workspace.CurrentCamera
 
@@ -20,12 +18,12 @@ local Camera     = workspace.CurrentCamera
 local CFG       = getgenv().BountyExtra or {}
 local SKILL_CFG = CFG["Auto Skill"]    or {}
 
-local ENABLE_PSILENT     = CFG["AimSilent"]       ~= false
-local ENABLE_TRIGGERBOT  = CFG["Triggerbot"]      == true
-local ENABLE_M1          = CFG["M1 click"]        ~= false
-local ENABLE_AUTOSKILL   = SKILL_CFG["Enabled"]   ~= false
-local ENABLE_AUTOHOP     = CFG["Auto server hop"] ~= false
-local ENABLE_GUI         = CFG["Gui"]             ~= false
+local ENABLE_PSILENT    = CFG["AimSilent"]       ~= false
+local ENABLE_TRIGGERBOT = CFG["Triggerbot"]      == true
+local ENABLE_M1         = CFG["M1 click"]        ~= false
+local ENABLE_AUTOSKILL  = SKILL_CFG["Enabled"]   ~= false
+local ENABLE_AUTOHOP    = CFG["Auto server hop"] ~= false
+local ENABLE_GUI        = CFG["Gui"]             ~= false
 
 local SKILL_Z     = SKILL_CFG["Z"]     ~= false
 local SKILL_X     = SKILL_CFG["X"]     ~= false
@@ -34,9 +32,8 @@ local SKILL_V     = SKILL_CFG["V"]     == true
 local SKILL_F     = SKILL_CFG["F"]     ~= false
 local SKILL_DELAY = SKILL_CFG["Delay"] or 0.3
 
--- pSilent config
-local HIT_CHANCE  = CFG["HitChance"] or 87  -- 80-92%
-local MAX_DIST    = 150
+local HIT_CHANCE = CFG["HitChance"] or 87
+local MAX_DIST   = 150
 
 local M1_WHITELIST = CFG["M1"] or {
     ["kitsune"]=true, ["t-rex"]=true, ["dragon"]=true,
@@ -47,13 +44,15 @@ local M1_WHITELIST = CFG["M1"] or {
 -- ================================================================
 -- [2] STATE
 -- ================================================================
-local TGT      = nil
-local TGT_AT   = 0
+local TGT         = nil
+local TGT_AT      = 0
 local _myDeaths   = 0
-local _theirDeaths = 0
+local _kills      = 0
 local _cpsCount   = 0
 local _cpsLast    = tick()
 local _cps        = 0
+local _hopCount   = 0
+local _lastHopTime = 0
 
 -- ================================================================
 -- [3] TARGET SYSTEM
@@ -114,48 +113,60 @@ local function isVisible(pos)
 end
 
 -- ================================================================
--- [4] TRACK DEATHS
+-- [4] KILL + DEATH TRACKING
+--     Kill = khi enemy Humanoid.Died VÀ tao là người cuối đánh
 -- ================================================================
-local function setupDeathTrack()
+local _lastDamaged = {}  -- lưu ai tao vừa đánh
+
+local function trackEnemy(p)
+    if not p or p == LP then return end
+    p.CharacterAdded:Connect(function(c)
+        task.wait(0.5)
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if not h then return end
+        -- Khi enemy chết
+        h.Died:Connect(function()
+            -- Chỉ tính kill nếu tao vừa đánh nó gần đây (< 5s)
+            if _lastDamaged[p.Name] and tick() - _lastDamaged[p.Name] < 5 then
+                _kills = _kills + 1
+                _lastDamaged[p.Name] = nil
+                warn("💀 Kill: " .. p.Name .. " | Total: " .. _kills)
+            end
+        end)
+    end)
+end
+
+-- Track tất cả player hiện tại
+for _, p in ipairs(Players:GetPlayers()) do
+    trackEnemy(p)
+end
+Players.PlayerAdded:Connect(trackEnemy)
+
+-- Track death của mình
+local function setupMyDeath()
     local c = LP.Character; if not c then return end
     local h = c:FindFirstChildOfClass("Humanoid"); if not h then return end
     h.Died:Connect(function()
         _myDeaths = _myDeaths + 1
+        warn("💀 Tao chết lần " .. _myDeaths)
     end)
-    -- Track enemy deaths
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP and p.Character then
-            local eh = p.Character:FindFirstChildOfClass("Humanoid")
-            if eh then
-                eh.Died:Connect(function()
-                    _theirDeaths = _theirDeaths + 1
-                end)
-            end
-        end
+end
+
+LP.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    setupMyDeath()
+end)
+task.delay(1, setupMyDeath)
+
+-- Đánh dấu khi M1/skill chạm enemy
+local function markDamage(target)
+    if target and target ~= LP then
+        _lastDamaged[target.Name] = tick()
     end
 end
 
-LP.CharacterAdded:Connect(function(c)
-    task.wait(0.5)
-    setupDeathTrack()
-end)
-
-Players.PlayerAdded:Connect(function(p)
-    p.CharacterAdded:Connect(function(c)
-        task.wait(0.5)
-        local eh = c:FindFirstChildOfClass("Humanoid")
-        if eh then
-            eh.Died:Connect(function()
-                _theirDeaths = _theirDeaths + 1
-            end)
-        end
-    end)
-end)
-
-task.delay(1, setupDeathTrack)
-
 -- ================================================================
--- [5] pSILENT — snap 1 frame
+-- [5] pSILENT
 -- ================================================================
 local function psilentSnap(doAction)
     if not ENABLE_PSILENT or not TGT then
@@ -172,14 +183,14 @@ local function psilentSnap(doAction)
     local dir     = (pred - Camera.CFrame.Position).Unit
     Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
     doAction()
+    markDamage(TGT)
     task.defer(function()
         pcall(function() Camera.CFrame = origCF end)
     end)
 end
 
 -- ================================================================
--- [6] TRIGGERBOT — tự click khi crosshair chạm target
---     Ít bị detect hơn raw spam vì chỉ click khi aim đúng
+-- [6] TRIGGERBOT
 -- ================================================================
 local _tbLast = 0
 
@@ -198,14 +209,15 @@ local function checkTriggerbot()
         local params = RaycastParams.new()
         params.FilterDescendantsInstances = {mc}
         params.FilterType = Enum.RaycastFilterType.Exclude
-        local result = workspace:Raycast(unitRay.Origin, unitRay.Direction * MAX_DIST, params)
+        local result = workspace:Raycast(
+            unitRay.Origin, unitRay.Direction * MAX_DIST, params
+        )
         if not result then return end
-        -- Kiểm tra có phải character của enemy không
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LP and isValid(p) and p.Character then
                 if result.Instance:IsDescendantOf(p.Character) then
                     _tbLast = now
-                    -- Click humanized
+                    markDamage(p)
                     pcall(function()
                         mouse1press()
                         task.wait(0.018 + math.random()*0.01)
@@ -219,7 +231,7 @@ local function checkTriggerbot()
 end
 
 -- ================================================================
--- [7] M1 HUMANIZED — CPS 12-18, burst control, anti-detect
+-- [7] M1 HUMANIZED
 -- ================================================================
 local _m1Last    = 0
 local _m1Burst   = 0
@@ -239,7 +251,6 @@ end
 local function doM1(sx, sy)
     local now = tick()
     if now < _m1BurstCD then return end
-    -- CPS 12-18 → delay 55-83ms + jitter
     local delay = 0.055 + math.random()*0.028
     if now - _m1Last < delay then return end
     _m1Last  = now
@@ -249,14 +260,12 @@ local function doM1(sx, sy)
     _cpsCount = _cpsCount + 1
     local elapsed = now - _cpsLast
     if elapsed >= 1 then
-        _cps      = math.floor(_cpsCount / elapsed)
-        _cpsCount = 0
-        _cpsLast  = now
+        _cps = math.floor(_cpsCount/elapsed)
+        _cpsCount = 0; _cpsLast = now
     end
 
-    -- Burst: 6-8 click rồi nghỉ 400-800ms
     if _m1Burst >= math.random(6,8) then
-        _m1Burst   = 0
+        _m1Burst = 0
         _m1BurstCD = now + 0.4 + math.random()*0.4
     end
 
@@ -284,15 +293,22 @@ local function pressKey(keyCode)
 end
 
 -- ================================================================
--- [9] AUTO HOP — fix 267/268/773
---     267: hop nhanh (bị kick bởi server)
---     268: hop sau 5s (bị teleport về spawn)
---     773: hop ngay (mất kết nối server)
---     Anti-detect: random delay, không retry liên tục
+-- [9] AUTO HOP — fix 267/268/773 mạnh nhất
+--     773 + nút "Rời Khỏi" → detect và hop ngay
+--     267 → hop sau 8s (không retry liên tục)
+--     268 → hop sau 5s
+--     Hop quá 3 lần → nghỉ 60s tránh ban
 -- ================================================================
-local _hopLock  = false
-local _lastHop  = 0
-local _hopCount = 0  -- đếm số lần hop liên tiếp, nghỉ nếu quá nhiều
+local _hopLock = false
+local _lastHop = 0
+
+local function charReady()
+    local c = LP.Character
+    if not c or not c.Parent then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    return c:FindFirstChild("HumanoidRootPart") ~= nil
+end
 
 local function getNewServer()
     local ok, sv = pcall(function()
@@ -317,32 +333,29 @@ end
 local function hopServer(delay, reason)
     if not ENABLE_AUTOHOP then return end
     if _hopLock then return end
-    -- Nếu hop quá 3 lần liên tiếp → nghỉ 60s tránh ban
+
+    -- Hop quá 3 lần liên tiếp → nghỉ 60s
     if _hopCount >= 3 then
-        warn("⚠️ Hop quá nhiều lần — nghỉ 60s")
+        warn("⚠️ Hop quá nhiều — nghỉ 60s")
         task.wait(60)
         _hopCount = 0
     end
+
     if tick() - _lastHop < 20 then return end
-    _hopLock = true
+    _hopLock  = true
     _hopCount = _hopCount + 1
-    warn("🔄 Hop ["..( reason or "auto").."] sau "..(delay or 3).."s")
+    warn("🔄 Hop ["..tostring(reason or "auto").."] sau "..tostring(delay or 3).."s")
+
     task.spawn(function()
         task.wait(delay or 3)
         local w = 0
-        local function charReady()
-            local c = LP.Character
-            if not c or not c.Parent then return false end
-            local h = c:FindFirstChildOfClass("Humanoid")
-            if not h or h.Health <= 0 then return false end
-            return c:FindFirstChild("HumanoidRootPart") ~= nil
-        end
         while not charReady() and w < 15 do task.wait(0.5); w=w+0.5 end
-        task.wait(0.5 + math.random()*0.5)  -- random delay tránh detect
+        task.wait(0.5 + math.random()*0.5)
         _lastHop = tick()
+
         local sv = getNewServer()
         if sv then
-            warn("✅ Server mới OK")
+            warn("✅ Tìm được server mới")
             local ok = pcall(function()
                 TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
             end)
@@ -355,28 +368,27 @@ local function hopServer(delay, reason)
             pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
         end
         task.wait(15)
-        _hopLock  = false
+        _hopLock = false
     end)
 end
 
--- Reset hop count sau 5 phút không bị lỗi
+-- Reset hop count sau 5 phút
 task.spawn(function()
-    while task.wait(300) do
-        _hopCount = 0
-    end
+    while task.wait(300) do _hopCount = 0 end
 end)
 
+-- TeleportInitFailed — hop ngay
 TpSvc.TeleportInitFailed:Connect(function(plr)
     if plr ~= LP then return end
     _hopLock = false; _lastHop = 0
-    hopServer(2, "773-TpFailed")
+    hopServer(2, "TpFailed")
 end)
 
+-- Character không spawn 10s → hop
 LP.CharacterRemoving:Connect(function()
     task.spawn(function()
         task.wait(10)
-        local c = LP.Character
-        if not c or not c:FindFirstChild("HumanoidRootPart") then
+        if not charReady() then
             _hopLock = false
             hopServer(2, "NoSpawn")
         end
@@ -388,27 +400,41 @@ end)
 -- ================================================================
 local _lastErrCheck = 0
 local _lastTgtCheck = 0
+local _lastErrMsg   = ""
 
 RunService.Heartbeat:Connect(function()
     local now = tick()
 
-    -- Poll lỗi 0.5s
-    if now - _lastErrCheck >= 0.5 then
+    -- Poll lỗi mỗi 0.3s — nhanh hơn để detect 773 kịp
+    if now - _lastErrCheck >= 0.3 then
         _lastErrCheck = now
         pcall(function()
             local m = GuiSvc:GetErrorMessage() or ""
-            if m == "" then return end
-            -- 773: mất kết nối → hop ngay
-            if string.find(m,"773") or string.find(m,"disconnect")
-            or string.find(m,"reconnect") then
-                _hopLock = false; hopServer(2, "773")
-            -- 267: bị kick → hop sau 8s
-            elseif string.find(m,"267") or string.find(m,"Security")
-            or string.find(m,"kicked") then
-                _hopLock = false; hopServer(8, "267")
-            -- 268: bị teleport về spawn → hop sau 5s
-            elseif string.find(m,"268") then
-                _hopLock = false; hopServer(5, "268")
+            -- Chỉ xử lý khi message thay đổi hoặc mới
+            if m ~= "" and m ~= _lastErrMsg then
+                _lastErrMsg = m
+                warn("ErrorMsg: " .. m)
+                local ml = string.lower(m)
+                if string.find(ml,"773")
+                or string.find(ml,"disconnect")
+                or string.find(ml,"reconnect")
+                or string.find(ml,"roi khoi")
+                or string.find(ml,"rời khỏi")
+                or string.find(ml,"leave") then
+                    -- 773: hop ngay, reset lock
+                    _hopLock = false
+                    hopServer(1, "773")
+                elseif string.find(ml,"267")
+                or string.find(ml,"security")
+                or string.find(ml,"kicked") then
+                    -- 267: hop sau 8s
+                    _hopLock = false
+                    hopServer(8, "267")
+                elseif string.find(ml,"268") then
+                    -- 268: hop sau 5s
+                    _hopLock = false
+                    hopServer(5, "268")
+                end
             end
         end)
     end
@@ -416,7 +442,7 @@ RunService.Heartbeat:Connect(function()
     -- Triggerbot
     checkTriggerbot()
 
-    -- Refresh target 0.5s
+    -- Refresh target
     if now - _lastTgtCheck >= 0.5 then
         _lastTgtCheck = now
         if not TGT or not isValid(TGT) or tgtDist() > MAX_DIST then
@@ -426,86 +452,156 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ================================================================
--- [11] GUI VIP — FPS, Ping, Uptime, Deaths, Kills, Players, CPS
+-- [11] GUI VIP — KÉO ĐƯỢC
 -- ================================================================
 if ENABLE_GUI then
     local G = Instance.new("ScreenGui")
-    G.Name = "BountyGUI"; G.ResetOnSpawn = false
+    G.Name = "BountyGUI"
+    G.ResetOnSpawn = false
+    G.DisplayOrder = 999
     G.Parent = LP:WaitForChild("PlayerGui")
 
-    -- Main frame
+    -- Main Frame
     local F = Instance.new("Frame", G)
-    F.Size = UDim2.new(0, 210, 0, 180)
-    F.Position = UDim2.new(0, 10, 0.5, -90)
-    F.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-    F.BackgroundTransparency = 0.15
+    F.Size = UDim2.new(0, 215, 0, 195)
+    F.Position = UDim2.new(0, 10, 0.4, 0)
+    F.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+    F.BackgroundTransparency = 0.1
     F.BorderSizePixel = 0
+    F.Active = true
     F.Visible = false
     Instance.new("UICorner", F).CornerRadius = UDim.new(0, 14)
     local St = Instance.new("UIStroke", F)
     St.Thickness = 1.5
+    St.Color = Color3.fromRGB(255, 215, 0)
 
-    local function lb(sz, pos, txt, fs, bold, color)
+    -- Title bar (kéo ở đây)
+    local TitleBar = Instance.new("Frame", F)
+    TitleBar.Size = UDim2.new(1, 0, 0, 28)
+    TitleBar.Position = UDim2.new(0, 0, 0, 0)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    TitleBar.BackgroundTransparency = 0.3
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Active = true
+    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 14)
+
+    local TitleLbl = Instance.new("TextLabel", TitleBar)
+    TitleLbl.Size = UDim2.new(1, -10, 1, 0)
+    TitleLbl.Position = UDim2.new(0, 10, 0, 0)
+    TitleLbl.BackgroundTransparency = 1
+    TitleLbl.Text = "⚡ BOUNTY VIP"
+    TitleLbl.TextSize = 13
+    TitleLbl.Font = Enum.Font.GothamBold
+    TitleLbl.TextColor3 = Color3.fromRGB(255, 215, 0)
+    TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Divider
+    local Div = Instance.new("Frame", F)
+    Div.Size = UDim2.new(1, -16, 0, 1)
+    Div.Position = UDim2.new(0, 8, 0, 29)
+    Div.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    Div.BorderSizePixel = 0
+
+    -- Labels
+    local function lb(pos, txt, color)
         local l = Instance.new("TextLabel", F)
-        l.Size = sz; l.Position = pos
+        l.Size = UDim2.new(1, -16, 0, 19)
+        l.Position = pos
         l.BackgroundTransparency = 1
-        l.Text = txt; l.TextSize = fs
+        l.Text = txt
+        l.TextSize = 12
+        l.Font = Enum.Font.Gotham
+        l.TextColor3 = color or Color3.fromRGB(220, 220, 220)
         l.TextXAlignment = Enum.TextXAlignment.Left
-        l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-        l.TextColor3 = color or Color3.fromRGB(255,255,255)
         return l
     end
 
-    local pad = UDim2.new(0,10,0,0)
+    local L1 = lb(UDim2.new(0,8,0,33),  "📶 FPS: --  Ping: --ms",     Color3.fromRGB(120,255,120))
+    local L2 = lb(UDim2.new(0,8,0,54),  "🖱️ CPS: 0",                  Color3.fromRGB(130,200,255))
+    local L3 = lb(UDim2.new(0,8,0,75),  "👥 Players: 0",               Color3.fromRGB(255,200,120))
+    local L4 = lb(UDim2.new(0,8,0,96),  "💀 Tao chết: 0",              Color3.fromRGB(255,100,100))
+    local L5 = lb(UDim2.new(0,8,0,117), "☠️ Kill: 0",                  Color3.fromRGB(100,255,150))
+    local L6 = lb(UDim2.new(0,8,0,138), "🎯 Target: None",              Color3.fromRGB(255,255,150))
+    local L7 = lb(UDim2.new(0,8,0,159), "⏱ Uptime: 00:00:00",          Color3.fromRGB(180,180,180))
+    local L8 = lb(UDim2.new(0,8,0,178), "🔄 Hop: 0 lần",               Color3.fromRGB(200,150,255))
 
-    local TL  = lb(UDim2.new(1,-10,0,22), UDim2.new(0,8,0,5),  "⚡ BOUNTY VIP",      14, true,  Color3.fromRGB(255,215,0))
-    local L1  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,30), "FPS: 60  |  Ping: 0ms", 12, false, Color3.fromRGB(180,255,180))
-    local L2  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,50), "CPS: 0",              12, false, Color3.fromRGB(180,220,255))
-    local L3  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,70), "Players: 0",          12, false, Color3.fromRGB(255,200,150))
-    local L4  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,90), "💀 Tao chết: 0",      12, false, Color3.fromRGB(255,120,120))
-    local L5  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,110),"☠️ Kill: 0",          12, false, Color3.fromRGB(120,255,120))
-    local L6  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,130),"🎯 Target: None",      12, false, Color3.fromRGB(255,255,180))
-    local L7  = lb(UDim2.new(1,-10,0,18), UDim2.new(0,8,0,150),"⏱ Uptime: 00:00:00",  12, false, Color3.fromRGB(200,200,200))
+    -- ================================================================
+    -- DRAG — kéo menu
+    -- ================================================================
+    local _dragging = false
+    local _dragStart = nil
+    local _frameStart = nil
 
-    -- Divider
-    local div = Instance.new("Frame", F)
-    div.Size = UDim2.new(1,-16,0,1)
-    div.Position = UDim2.new(0,8,0,26)
-    div.BackgroundColor3 = Color3.fromRGB(80,80,80)
-    div.BorderSizePixel = 0
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            _dragging   = true
+            _dragStart  = input.Position
+            _frameStart = F.Position
+        end
+    end)
 
-    local fps = 60; local t0 = os.clock()
+    TitleBar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            _dragging = false
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if not _dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local delta = input.Position - _dragStart
+        F.Position = UDim2.new(
+            _frameStart.X.Scale,
+            _frameStart.X.Offset + delta.X,
+            _frameStart.Y.Scale,
+            _frameStart.Y.Offset + delta.Y
+        )
+    end)
+
+    -- ================================================================
+    -- UPDATE LOOP
+    -- ================================================================
+    local fps = 60
+    local t0  = os.clock()
 
     RunService.RenderStepped:Connect(function(dt)
         if dt > 0 then fps = math.floor(1/dt) end
         local c = Color3.fromHSV((os.clock()%4)/4, .9, 1)
-        TL.TextColor3 = c; St.Color = c
+        TitleLbl.TextColor3 = c
+        St.Color = c
     end)
 
     task.spawn(function()
         while task.wait(0.5) do
-            local ping = math.floor(LP:GetNetworkPing()*1000)
-            local playerCount = #Players:GetPlayers()
-            local e = os.clock() - t0
-            local tgtName = (TGT and isValid(TGT)) and TGT.Name or "None"
+            local ping  = math.floor(LP:GetNetworkPing()*1000)
+            local pCount = #Players:GetPlayers()
+            local e     = os.clock() - t0
+            local tName = (TGT and isValid(TGT)) and TGT.Name or "None"
 
-            L1.Text = ("FPS: %d  |  Ping: %dms"):format(fps, ping)
-            L2.Text = ("CPS: %d"):format(_cps)
-            L3.Text = ("Players: %d"):format(playerCount)
+            -- FPS màu theo giá trị
+            local fpsColor
+            if fps >= 50 then fpsColor = Color3.fromRGB(120,255,120)
+            elseif fps >= 30 then fpsColor = Color3.fromRGB(255,220,80)
+            else fpsColor = Color3.fromRGB(255,80,80) end
+            L1.TextColor3 = fpsColor
+
+            -- Ping màu theo ngưỡng
+            if ping < 80 then L1.TextColor3 = Color3.fromRGB(120,255,120)
+            elseif ping < 150 then L1.TextColor3 = Color3.fromRGB(255,220,80)
+            else L1.TextColor3 = Color3.fromRGB(255,80,80) end
+
+            L1.Text = ("📶 FPS: %d  Ping: %dms"):format(fps, ping)
+            L2.Text = ("🖱️ CPS: %d"):format(_cps)
+            L3.Text = ("👥 Players: %d"):format(pCount)
             L4.Text = ("💀 Tao chết: %d"):format(_myDeaths)
-            L5.Text = ("☠️ Kill: %d"):format(_theirDeaths)
-            L6.Text = ("🎯 Target: %s"):format(tgtName)
+            L5.Text = ("☠️ Kill: %d"):format(_kills)
+            L6.Text = ("🎯 Target: %s"):format(tName)
             L7.Text = ("⏱ Uptime: %02d:%02d:%02d"):format(
                 math.floor(e/3600), math.floor(e%3600/60), math.floor(e%60))
-
-            -- Màu ping theo ngưỡng
-            if ping < 80 then
-                L1.TextColor3 = Color3.fromRGB(120,255,120)
-            elseif ping < 150 then
-                L1.TextColor3 = Color3.fromRGB(255,220,80)
-            else
-                L1.TextColor3 = Color3.fromRGB(255,80,80)
-            end
+            L8.Text = ("🔄 Hop: %d lần"):format(_hopCount)
         end
     end)
 
