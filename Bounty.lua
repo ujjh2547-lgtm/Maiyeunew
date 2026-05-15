@@ -1,6 +1,6 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT VIP
---  Menu kéo được, Kill tracking đúng, Fix 267/773 mạnh hơn
+--  Fix: Kill tracking đúng, bỏ Hop khỏi menu, NPC bypass mạnh
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -44,15 +44,15 @@ local M1_WHITELIST = CFG["M1"] or {
 -- ================================================================
 -- [2] STATE
 -- ================================================================
-local TGT         = nil
-local TGT_AT      = 0
-local _myDeaths   = 0
-local _kills      = 0
-local _cpsCount   = 0
-local _cpsLast    = tick()
-local _cps        = 0
-local _hopCount   = 0
-local _lastHopTime = 0
+local TGT          = nil
+local TGT_AT       = 0
+local _myDeaths    = 0
+local _kills       = 0
+local _cpsCount    = 0
+local _cpsLast     = tick()
+local _cps         = 0
+local _hopCount    = 0
+local _lastDamaged = {}
 
 -- ================================================================
 -- [3] TARGET SYSTEM
@@ -114,35 +114,41 @@ end
 
 -- ================================================================
 -- [4] KILL + DEATH TRACKING
---     Kill = khi enemy Humanoid.Died VÀ tao là người cuối đánh
 -- ================================================================
-local _lastDamaged = {}  -- lưu ai tao vừa đánh
-
 local function trackEnemy(p)
     if not p or p == LP then return end
     p.CharacterAdded:Connect(function(c)
         task.wait(0.5)
         local h = c:FindFirstChildOfClass("Humanoid")
         if not h then return end
-        -- Khi enemy chết
         h.Died:Connect(function()
-            -- Chỉ tính kill nếu tao vừa đánh nó gần đây (< 5s)
-            if _lastDamaged[p.Name] and tick() - _lastDamaged[p.Name] < 5 then
+            if _lastDamaged[p.Name]
+            and tick() - _lastDamaged[p.Name] < 6 then
                 _kills = _kills + 1
                 _lastDamaged[p.Name] = nil
-                warn("💀 Kill: " .. p.Name .. " | Total: " .. _kills)
+                warn("☠️ Kill! " .. p.Name .. " | Total: " .. _kills)
             end
         end)
     end)
+    -- Track character hiện tại luôn
+    if p.Character then
+        local h = p.Character:FindFirstChildOfClass("Humanoid")
+        if h then
+            h.Died:Connect(function()
+                if _lastDamaged[p.Name]
+                and tick() - _lastDamaged[p.Name] < 6 then
+                    _kills = _kills + 1
+                    _lastDamaged[p.Name] = nil
+                    warn("☠️ Kill! " .. p.Name .. " | Total: " .. _kills)
+                end
+            end)
+        end
+    end
 end
 
--- Track tất cả player hiện tại
-for _, p in ipairs(Players:GetPlayers()) do
-    trackEnemy(p)
-end
+for _, p in ipairs(Players:GetPlayers()) do trackEnemy(p) end
 Players.PlayerAdded:Connect(trackEnemy)
 
--- Track death của mình
 local function setupMyDeath()
     local c = LP.Character; if not c then return end
     local h = c:FindFirstChildOfClass("Humanoid"); if not h then return end
@@ -151,17 +157,12 @@ local function setupMyDeath()
         warn("💀 Tao chết lần " .. _myDeaths)
     end)
 end
-
-LP.CharacterAdded:Connect(function()
-    task.wait(0.5)
-    setupMyDeath()
-end)
+LP.CharacterAdded:Connect(function() task.wait(0.5); setupMyDeath() end)
 task.delay(1, setupMyDeath)
 
--- Đánh dấu khi M1/skill chạm enemy
-local function markDamage(target)
-    if target and target ~= LP then
-        _lastDamaged[target.Name] = tick()
+local function markDamage()
+    if TGT and isValid(TGT) then
+        _lastDamaged[TGT.Name] = tick()
     end
 end
 
@@ -183,7 +184,6 @@ local function psilentSnap(doAction)
     local dir     = (pred - Camera.CFrame.Position).Unit
     Camera.CFrame = CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + dir)
     doAction()
-    markDamage(TGT)
     task.defer(function()
         pcall(function() Camera.CFrame = origCF end)
     end)
@@ -193,7 +193,6 @@ end
 -- [6] TRIGGERBOT
 -- ================================================================
 local _tbLast = 0
-
 local function checkTriggerbot()
     if not ENABLE_TRIGGERBOT then return end
     local now = tick()
@@ -203,21 +202,17 @@ local function checkTriggerbot()
         local mh = mc:FindFirstChildOfClass("Humanoid")
         if not mh or mh.Health <= 0 then return end
         local unitRay = Camera:ScreenPointToRay(
-            Camera.ViewportSize.X/2,
-            Camera.ViewportSize.Y/2
-        )
+            Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
         local params = RaycastParams.new()
         params.FilterDescendantsInstances = {mc}
         params.FilterType = Enum.RaycastFilterType.Exclude
-        local result = workspace:Raycast(
-            unitRay.Origin, unitRay.Direction * MAX_DIST, params
-        )
+        local result = workspace:Raycast(unitRay.Origin, unitRay.Direction*MAX_DIST, params)
         if not result then return end
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LP and isValid(p) and p.Character then
                 if result.Instance:IsDescendantOf(p.Character) then
                     _tbLast = now
-                    markDamage(p)
+                    _lastDamaged[p.Name] = tick()
                     pcall(function()
                         mouse1press()
                         task.wait(0.018 + math.random()*0.01)
@@ -255,20 +250,18 @@ local function doM1(sx, sy)
     if now - _m1Last < delay then return end
     _m1Last  = now
     _m1Burst = _m1Burst + 1
-
-    -- CPS tracking
     _cpsCount = _cpsCount + 1
     local elapsed = now - _cpsLast
     if elapsed >= 1 then
         _cps = math.floor(_cpsCount/elapsed)
         _cpsCount = 0; _cpsLast = now
     end
-
     if _m1Burst >= math.random(6,8) then
         _m1Burst = 0
         _m1BurstCD = now + 0.4 + math.random()*0.4
     end
-
+    -- Đánh dấu damage TRƯỚC khi click
+    markDamage()
     psilentSnap(function()
         pcall(function()
             mousemoveabs(sx + math.random(-4,4), sy + math.random(-4,4))
@@ -283,6 +276,8 @@ end
 -- [8] PRESS KEY
 -- ================================================================
 local function pressKey(keyCode)
+    -- Đánh dấu damage khi dùng skill
+    markDamage()
     psilentSnap(function()
         pcall(function()
             VIM:SendKeyEvent(true,  keyCode, false, nil)
@@ -293,14 +288,10 @@ local function pressKey(keyCode)
 end
 
 -- ================================================================
--- [9] AUTO HOP — fix 267/268/773 mạnh nhất
---     773 + nút "Rời Khỏi" → detect và hop ngay
---     267 → hop sau 8s (không retry liên tục)
---     268 → hop sau 5s
---     Hop quá 3 lần → nghỉ 60s tránh ban
+-- [9] AUTO HOP
 -- ================================================================
-local _hopLock = false
-local _lastHop = 0
+local _hopLock  = false
+local _lastHop  = 0
 
 local function charReady()
     local c = LP.Character
@@ -333,29 +324,23 @@ end
 local function hopServer(delay, reason)
     if not ENABLE_AUTOHOP then return end
     if _hopLock then return end
-
-    -- Hop quá 3 lần liên tiếp → nghỉ 60s
     if _hopCount >= 3 then
         warn("⚠️ Hop quá nhiều — nghỉ 60s")
-        task.wait(60)
-        _hopCount = 0
+        task.wait(60); _hopCount = 0
     end
-
     if tick() - _lastHop < 20 then return end
     _hopLock  = true
     _hopCount = _hopCount + 1
     warn("🔄 Hop ["..tostring(reason or "auto").."] sau "..tostring(delay or 3).."s")
-
     task.spawn(function()
         task.wait(delay or 3)
         local w = 0
         while not charReady() and w < 15 do task.wait(0.5); w=w+0.5 end
         task.wait(0.5 + math.random()*0.5)
         _lastHop = tick()
-
         local sv = getNewServer()
         if sv then
-            warn("✅ Tìm được server mới")
+            warn("✅ Server mới OK")
             local ok = pcall(function()
                 TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
             end)
@@ -367,36 +352,27 @@ local function hopServer(delay, reason)
             warn("⚠️ Teleport thường")
             pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
         end
-        task.wait(15)
-        _hopLock = false
+        task.wait(15); _hopLock = false
     end)
 end
 
--- Reset hop count sau 5 phút
-task.spawn(function()
-    while task.wait(300) do _hopCount = 0 end
-end)
+task.spawn(function() while task.wait(300) do _hopCount = 0 end end)
 
--- TeleportInitFailed — hop ngay
 TpSvc.TeleportInitFailed:Connect(function(plr)
     if plr ~= LP then return end
     _hopLock = false; _lastHop = 0
     hopServer(2, "TpFailed")
 end)
 
--- Character không spawn 10s → hop
 LP.CharacterRemoving:Connect(function()
     task.spawn(function()
         task.wait(10)
-        if not charReady() then
-            _hopLock = false
-            hopServer(2, "NoSpawn")
-        end
+        if not charReady() then _hopLock = false; hopServer(2, "NoSpawn") end
     end)
 end)
 
 -- ================================================================
--- [10] HEARTBEAT — target + poll lỗi 267/268/773
+-- [10] HEARTBEAT
 -- ================================================================
 local _lastErrCheck = 0
 local _lastTgtCheck = 0
@@ -404,45 +380,28 @@ local _lastErrMsg   = ""
 
 RunService.Heartbeat:Connect(function()
     local now = tick()
-
-    -- Poll lỗi mỗi 0.3s — nhanh hơn để detect 773 kịp
     if now - _lastErrCheck >= 0.3 then
         _lastErrCheck = now
         pcall(function()
             local m = GuiSvc:GetErrorMessage() or ""
-            -- Chỉ xử lý khi message thay đổi hoặc mới
             if m ~= "" and m ~= _lastErrMsg then
                 _lastErrMsg = m
-                warn("ErrorMsg: " .. m)
+                warn("Err: " .. m)
                 local ml = string.lower(m)
-                if string.find(ml,"773")
-                or string.find(ml,"disconnect")
-                or string.find(ml,"reconnect")
-                or string.find(ml,"roi khoi")
-                or string.find(ml,"rời khỏi")
-                or string.find(ml,"leave") then
-                    -- 773: hop ngay, reset lock
-                    _hopLock = false
-                    hopServer(1, "773")
-                elseif string.find(ml,"267")
-                or string.find(ml,"security")
+                if string.find(ml,"773") or string.find(ml,"disconnect")
+                or string.find(ml,"reconnect") or string.find(ml,"roi khoi")
+                or string.find(ml,"rời khỏi") or string.find(ml,"leave") then
+                    _hopLock = false; hopServer(1, "773")
+                elseif string.find(ml,"267") or string.find(ml,"security")
                 or string.find(ml,"kicked") then
-                    -- 267: hop sau 8s
-                    _hopLock = false
-                    hopServer(8, "267")
+                    _hopLock = false; hopServer(8, "267")
                 elseif string.find(ml,"268") then
-                    -- 268: hop sau 5s
-                    _hopLock = false
-                    hopServer(5, "268")
+                    _hopLock = false; hopServer(5, "268")
                 end
             end
         end)
     end
-
-    -- Triggerbot
     checkTriggerbot()
-
-    -- Refresh target
     if now - _lastTgtCheck >= 0.5 then
         _lastTgtCheck = now
         if not TGT or not isValid(TGT) or tgtDist() > MAX_DIST then
@@ -452,126 +411,93 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ================================================================
--- [11] GUI VIP — KÉO ĐƯỢC
+-- [11] GUI VIP — KÉO ĐƯỢC, không có dòng Hop
 -- ================================================================
 if ENABLE_GUI then
     local G = Instance.new("ScreenGui")
-    G.Name = "BountyGUI"
-    G.ResetOnSpawn = false
+    G.Name = "BountyGUI"; G.ResetOnSpawn = false
     G.DisplayOrder = 999
     G.Parent = LP:WaitForChild("PlayerGui")
 
-    -- Main Frame
     local F = Instance.new("Frame", G)
-    F.Size = UDim2.new(0, 215, 0, 195)
+    F.Size = UDim2.new(0, 215, 0, 175)
     F.Position = UDim2.new(0, 10, 0.4, 0)
     F.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
     F.BackgroundTransparency = 0.1
     F.BorderSizePixel = 0
-    F.Active = true
-    F.Visible = false
+    F.Active = true; F.Visible = false
     Instance.new("UICorner", F).CornerRadius = UDim.new(0, 14)
     local St = Instance.new("UIStroke", F)
     St.Thickness = 1.5
-    St.Color = Color3.fromRGB(255, 215, 0)
 
-    -- Title bar (kéo ở đây)
-    local TitleBar = Instance.new("Frame", F)
-    TitleBar.Size = UDim2.new(1, 0, 0, 28)
-    TitleBar.Position = UDim2.new(0, 0, 0, 0)
-    TitleBar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    TitleBar.BackgroundTransparency = 0.3
-    TitleBar.BorderSizePixel = 0
-    TitleBar.Active = true
-    Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 14)
+    -- Title bar kéo được
+    local TB = Instance.new("Frame", F)
+    TB.Size = UDim2.new(1, 0, 0, 28)
+    TB.Position = UDim2.new(0, 0, 0, 0)
+    TB.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    TB.BackgroundTransparency = 0.3
+    TB.BorderSizePixel = 0; TB.Active = true
+    Instance.new("UICorner", TB).CornerRadius = UDim.new(0, 14)
 
-    local TitleLbl = Instance.new("TextLabel", TitleBar)
-    TitleLbl.Size = UDim2.new(1, -10, 1, 0)
-    TitleLbl.Position = UDim2.new(0, 10, 0, 0)
-    TitleLbl.BackgroundTransparency = 1
-    TitleLbl.Text = "⚡ BOUNTY VIP"
-    TitleLbl.TextSize = 13
-    TitleLbl.Font = Enum.Font.GothamBold
-    TitleLbl.TextColor3 = Color3.fromRGB(255, 215, 0)
-    TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    local TL = Instance.new("TextLabel", TB)
+    TL.Size = UDim2.new(1,-10,1,0); TL.Position = UDim2.new(0,10,0,0)
+    TL.BackgroundTransparency = 1; TL.Text = "⚡ BOUNTY VIP"
+    TL.TextSize = 13; TL.Font = Enum.Font.GothamBold
+    TL.TextColor3 = Color3.fromRGB(255,215,0)
+    TL.TextXAlignment = Enum.TextXAlignment.Left
 
-    -- Divider
     local Div = Instance.new("Frame", F)
-    Div.Size = UDim2.new(1, -16, 0, 1)
-    Div.Position = UDim2.new(0, 8, 0, 29)
-    Div.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    Div.BorderSizePixel = 0
+    Div.Size = UDim2.new(1,-16,0,1); Div.Position = UDim2.new(0,8,0,29)
+    Div.BackgroundColor3 = Color3.fromRGB(60,60,60); Div.BorderSizePixel = 0
 
-    -- Labels
     local function lb(pos, txt, color)
         local l = Instance.new("TextLabel", F)
-        l.Size = UDim2.new(1, -16, 0, 19)
-        l.Position = pos
-        l.BackgroundTransparency = 1
-        l.Text = txt
-        l.TextSize = 12
+        l.Size = UDim2.new(1,-16,0,19); l.Position = pos
+        l.BackgroundTransparency = 1; l.Text = txt; l.TextSize = 12
         l.Font = Enum.Font.Gotham
-        l.TextColor3 = color or Color3.fromRGB(220, 220, 220)
+        l.TextColor3 = color or Color3.fromRGB(220,220,220)
         l.TextXAlignment = Enum.TextXAlignment.Left
         return l
     end
 
-    local L1 = lb(UDim2.new(0,8,0,33),  "📶 FPS: --  Ping: --ms",     Color3.fromRGB(120,255,120))
-    local L2 = lb(UDim2.new(0,8,0,54),  "🖱️ CPS: 0",                  Color3.fromRGB(130,200,255))
-    local L3 = lb(UDim2.new(0,8,0,75),  "👥 Players: 0",               Color3.fromRGB(255,200,120))
-    local L4 = lb(UDim2.new(0,8,0,96),  "💀 Tao chết: 0",              Color3.fromRGB(255,100,100))
-    local L5 = lb(UDim2.new(0,8,0,117), "☠️ Kill: 0",                  Color3.fromRGB(100,255,150))
-    local L6 = lb(UDim2.new(0,8,0,138), "🎯 Target: None",              Color3.fromRGB(255,255,150))
-    local L7 = lb(UDim2.new(0,8,0,159), "⏱ Uptime: 00:00:00",          Color3.fromRGB(180,180,180))
-    local L8 = lb(UDim2.new(0,8,0,178), "🔄 Hop: 0 lần",               Color3.fromRGB(200,150,255))
+    local L1 = lb(UDim2.new(0,8,0,33),  "📶 FPS: --  Ping: --ms", Color3.fromRGB(120,255,120))
+    local L2 = lb(UDim2.new(0,8,0,54),  "🖱️ CPS: 0",              Color3.fromRGB(130,200,255))
+    local L3 = lb(UDim2.new(0,8,0,75),  "👥 Players: 0",           Color3.fromRGB(255,200,120))
+    local L4 = lb(UDim2.new(0,8,0,96),  "💀 Tao chết: 0",          Color3.fromRGB(255,100,100))
+    local L5 = lb(UDim2.new(0,8,0,117), "☠️ Kill: 0",              Color3.fromRGB(100,255,150))
+    local L6 = lb(UDim2.new(0,8,0,138), "🎯 Target: None",          Color3.fromRGB(255,255,150))
+    local L7 = lb(UDim2.new(0,8,0,158), "⏱ Uptime: 00:00:00",      Color3.fromRGB(180,180,180))
 
-    -- ================================================================
-    -- DRAG — kéo menu
-    -- ================================================================
-    local _dragging = false
-    local _dragStart = nil
-    local _frameStart = nil
-
-    TitleBar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            _dragging   = true
-            _dragStart  = input.Position
-            _frameStart = F.Position
+    -- Drag logic
+    local _drag = false; local _dragStart; local _frameStart
+    TB.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch
+        or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            _drag = true; _dragStart = i.Position; _frameStart = F.Position
         end
     end)
-
-    TitleBar.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            _dragging = false
+    TB.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.Touch
+        or i.UserInputType == Enum.UserInputType.MouseButton1 then
+            _drag = false
         end
     end)
-
-    UIS.InputChanged:Connect(function(input)
-        if not _dragging then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseMovement
-        and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local delta = input.Position - _dragStart
+    UIS.InputChanged:Connect(function(i)
+        if not _drag then return end
+        if i.UserInputType ~= Enum.UserInputType.MouseMovement
+        and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = i.Position - _dragStart
         F.Position = UDim2.new(
-            _frameStart.X.Scale,
-            _frameStart.X.Offset + delta.X,
-            _frameStart.Y.Scale,
-            _frameStart.Y.Offset + delta.Y
+            _frameStart.X.Scale, _frameStart.X.Offset + d.X,
+            _frameStart.Y.Scale, _frameStart.Y.Offset + d.Y
         )
     end)
 
-    -- ================================================================
-    -- UPDATE LOOP
-    -- ================================================================
-    local fps = 60
-    local t0  = os.clock()
-
+    local fps = 60; local t0 = os.clock()
     RunService.RenderStepped:Connect(function(dt)
         if dt > 0 then fps = math.floor(1/dt) end
-        local c = Color3.fromHSV((os.clock()%4)/4, .9, 1)
-        TitleLbl.TextColor3 = c
-        St.Color = c
+        local c = Color3.fromHSV((os.clock()%4)/4,.9,1)
+        TL.TextColor3 = c; St.Color = c
     end)
 
     task.spawn(function()
@@ -580,47 +506,62 @@ if ENABLE_GUI then
             local pCount = #Players:GetPlayers()
             local e     = os.clock() - t0
             local tName = (TGT and isValid(TGT)) and TGT.Name or "None"
-
-            -- FPS màu theo giá trị
-            local fpsColor
-            if fps >= 50 then fpsColor = Color3.fromRGB(120,255,120)
-            elseif fps >= 30 then fpsColor = Color3.fromRGB(255,220,80)
-            else fpsColor = Color3.fromRGB(255,80,80) end
-            L1.TextColor3 = fpsColor
-
-            -- Ping màu theo ngưỡng
             if ping < 80 then L1.TextColor3 = Color3.fromRGB(120,255,120)
             elseif ping < 150 then L1.TextColor3 = Color3.fromRGB(255,220,80)
             else L1.TextColor3 = Color3.fromRGB(255,80,80) end
-
             L1.Text = ("📶 FPS: %d  Ping: %dms"):format(fps, ping)
             L2.Text = ("🖱️ CPS: %d"):format(_cps)
             L3.Text = ("👥 Players: %d"):format(pCount)
             L4.Text = ("💀 Tao chết: %d"):format(_myDeaths)
             L5.Text = ("☠️ Kill: %d"):format(_kills)
             L6.Text = ("🎯 Target: %s"):format(tName)
-            L7.Text = ("⏱ Uptime: %02d:%02d:%02d"):format(
-                math.floor(e/3600), math.floor(e%3600/60), math.floor(e%60))
-            L8.Text = ("🔄 Hop: %d lần"):format(_hopCount)
+            L7.Text = ("⏱ %02d:%02d:%02d"):format(
+                math.floor(e/3600),math.floor(e%3600/60),math.floor(e%60))
         end
     end)
-
     task.delay(0.8, function() F.Visible = true end)
 end
 
 -- ================================================================
--- [12] SAFEZONE BYPASS
+-- [12] NPC / QUEST / DIALOGUE BYPASS — tự bỏ qua khi lỡ click
 -- ================================================================
 task.spawn(function()
-    while task.wait(0.5) do
+    while task.wait(0.3) do
         pcall(function()
-            local pg=LP.PlayerGui
-            local d=pg:FindFirstChild("DialogueGui"); if d then d.Enabled=false end
-            local q=pg:FindFirstChild("QuestGui");    if q then q.Enabled=false end
-            local c=LP.Character
+            local pg = LP.PlayerGui
+            for _, gui in ipairs(pg:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui.Enabled then
+                    local name = string.lower(gui.Name)
+                    if string.find(name,"dialogue") or string.find(name,"quest")
+                    or string.find(name,"npc") or string.find(name,"shop")
+                    or string.find(name,"interact") or string.find(name,"talk") then
+                        -- Tìm nút bỏ qua/đóng
+                        local closed = false
+                        for _, obj in ipairs(gui:GetDescendants()) do
+                            if obj:IsA("TextButton") and obj.Visible then
+                                local t = string.lower(obj.Text or "")
+                                if string.find(t,"close") or string.find(t,"skip")
+                                or string.find(t,"cancel") or string.find(t,"exit")
+                                or t == "x" or string.find(t,"thoat")
+                                or string.find(t,"thoát") or string.find(t,"bo qua")
+                                or string.find(t,"bỏ qua") or string.find(t,"next")
+                                or string.find(t,"tiep") or string.find(t,"tiếp") then
+                                    pcall(function() obj:Activate() end)
+                                    closed = true
+                                end
+                            end
+                        end
+                        -- Force disable nếu không tìm được nút
+                        if not closed then gui.Enabled = false end
+                    end
+                end
+            end
+
+            -- Xóa safezone + forcefield
+            local c = LP.Character
             if c then
-                c:SetAttribute("InSafeZone",false)
-                local ff=c:FindFirstChildOfClass("ForceField")
+                c:SetAttribute("InSafeZone", false)
+                local ff = c:FindFirstChildOfClass("ForceField")
                 if ff then ff:Destroy() end
             end
         end)
