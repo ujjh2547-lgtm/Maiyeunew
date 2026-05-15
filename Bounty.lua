@@ -404,26 +404,60 @@ end
 
 task.spawn(function() while task.wait(300) do _hopCount=0 end end)
 
--- TeleportInitFailed: CHỈ tắt popup OK, không hop
--- Vì vẫn còn trong game → farm bình thường tiếp
-TpSvc.TeleportInitFailed:Connect(function(plr, errMsg, errCode)
-    if plr ~= LP then return end
-    warn("TeleportInitFailed: "..tostring(errCode))
-    -- Tắt popup OK
-    task.spawn(function()
-        task.wait(0.2)
-        closePopup()
-    end)
-    -- KHÔNG hop — vì vẫn còn trong server cũ
+-- ================================================================
+-- AUTO CLICK POPUP "OK" — chạy liên tục mỗi 0.5s
+-- Tự bấm mọi nút OK/Okay xuất hiện trong game
+-- ================================================================
+task.spawn(function()
+    while task.wait(0.5) do
+        pcall(function()
+            local pg = LP.PlayerGui
+            for _, obj in ipairs(pg:GetDescendants()) do
+                if obj:IsA("TextButton") and obj.Visible then
+                    local t = string.lower(obj.Text or "")
+                    if t == "ok" or t == "okay" then
+                        pcall(function() obj:Activate() end)
+                        warn("✅ Auto bấm OK popup")
+                    end
+                end
+            end
+        end)
+    end
 end)
 
-LP.CharacterRemoving:Connect(function()
+-- ================================================================
+-- TeleportInitFailed — bấm OK rồi hop server mới
+-- Vì Bountynew đã cố hop nhưng fail → script mình hop thay
+-- ================================================================
+TpSvc.TeleportInitFailed:Connect(function(plr, errMsg, errCode)
+    if plr ~= LP then return end
+    warn("TeleportInitFailed: "..tostring(errCode).." | "..tostring(errMsg))
+
+    -- Bấm OK ngay
     task.spawn(function()
-        task.wait(12)
-        if not charReady() then
-            _hopLock=false; hopServer(2, "NoSpawn")
+        for i = 1, 5 do
+            task.wait(0.3)
+            pcall(function()
+                local pg = LP.PlayerGui
+                for _, obj in ipairs(pg:GetDescendants()) do
+                    if obj:IsA("TextButton") and obj.Visible then
+                        local t = string.lower(obj.Text or "")
+                        if t == "ok" or t == "okay" then
+                            pcall(function() obj:Activate() end)
+                        end
+                    end
+                end
+            end)
         end
     end)
+
+    -- Hop server khác sau 2s
+    -- TeleportInitFailed = Bountynew cố hop nhưng fail
+    -- → cần hop server khác thay thế
+    task.wait(2)
+    _hopLock = false
+    _lastHop = 0
+    hopServer(1, "773-TpFailed")
 end)
 
 -- ================================================================
@@ -436,13 +470,14 @@ local _lastTgtCheck   = 0
 local _lastPopupCheck = 0
 
 local PATTERNS_773 = {
-    "773", "disconnect", "reconnect", "lost connection",
-    "mất kết nối", "mat ket noi", "roi khoi", "rời khỏi",
-    "server closed", "không thể kết nối", "khong the ket noi",
-    "kết nối lại không thành công", "không nhận được phản hồi",
+    "773",
     "dich chuyen that bai", "dịch chuyển thất bại",
-    "dia diem bi han che", "địa điểm bị hạn chế",
-    "restricted", "place restricted",
+    "dia diem bi han che",  "địa điểm bị hạn chế",
+    "co gang dich chuyen",  "cố gắng dịch chuyển",
+    "disconnect", "reconnect", "lost connection",
+    "mất kết nối", "roi khoi", "rời khỏi",
+    "server closed", "restricted", "place restricted",
+    "không thể kết nối", "kết nối lại không thành công",
 }
 local PATTERNS_267 = {
     "267", "kicked", "security", "violation",
@@ -488,29 +523,38 @@ RunService.Heartbeat:Connect(function()
         end)
     end
 
-    -- Scan popup PlayerGui 0.5s
-    if now - _lastPopupCheck >= 0.5 then
-        _lastPopupCheck = now
-        pcall(function()
-            local pg = LP.PlayerGui
-            for _, gui in ipairs(pg:GetDescendants()) do
-                if (gui:IsA("TextLabel") or gui:IsA("TextBox")) and gui.Visible then
-                    local t = gui.Text or ""
-                    if t ~= "" then
-                        if matchP(t, PATTERNS_773) then
-                            if not charReady() then
-                                _hopLock=false; hopServer(1, "773-popup")
-                            else
-                                closePopup()
+-- Scan popup PlayerGui
+if now - _lastPopupCheck >= 0.5 then
+    _lastPopupCheck = now
+    pcall(function()
+        local pg = LP.PlayerGui
+        for _, obj in ipairs(pg:GetDescendants()) do
+            if (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Visible then
+                local t = obj.Text or ""
+                if t ~= "" and matchP(t, PATTERNS_773) then
+                    warn("🚨 Popup 773 detect: "..t:sub(1,50))
+                    -- Auto bấm OK
+                    pcall(function()
+                        local pg2 = LP.PlayerGui
+                        for _, btn in ipairs(pg2:GetDescendants()) do
+                            if btn:IsA("TextButton") and btn.Visible then
+                                local bt = string.lower(btn.Text or "")
+                                if bt == "ok" or bt == "okay" then
+                                    btn:Activate()
+                                end
                             end
-                        elseif matchP(t, PATTERNS_267) then
-                            _hopLock=false; hopServer(8, "267-popup")
                         end
-                    end
+                    end)
+                    -- Hop ngay không cần check charReady
+                    _hopLock = false
+                    hopServer(1, "773-popup")
+                elseif t ~= "" and matchP(t, PATTERNS_267) then
+                    _hopLock = false; hopServer(8, "267-popup")
                 end
             end
-        end)
-    end
+        end
+    end)
+end
 
     checkTriggerbot()
 
