@@ -506,56 +506,56 @@ RunService.Heartbeat:Connect(function()
     end
 
     -- Scan popup PlayerGui
-   if now - _lastPopupCheck >= 0.8 then
-       _lastPopupCheck = now
-       pcall(function()
-           local pg = LP.PlayerGui
-           for _, gui in ipairs(pg:GetDescendants()) do
-               if (gui:IsA("TextLabel") or gui:IsA("TextBox")) and gui.Visible then
-                   local t = gui.Text or ""
-                   if t ~= "" and matchP(t, PATTERNS_773) then
+if now - _lastPopupCheck >= 0.8 then
+    _lastPopupCheck = now
+    pcall(function()
+        local pg = LP.PlayerGui
+        for _, gui in ipairs(pg:GetDescendants()) do
+            if (gui:IsA("TextLabel") or gui:IsA("TextBox")) and gui.Visible then
+                local t = gui.Text or ""
+                if t ~= "" and matchP(t, PATTERNS_773) then
                     -- Kiểm tra button để phân biệt 2 dạng
-                       local hasRoiKhoi = false
-                       local hasOk      = false
-                       local root = gui.Parent
-                       while root and not root:IsA("ScreenGui") do
-                           root = root.Parent
-                       end
-                       if root then
-                           for _, btn in ipairs(root:GetDescendants()) do
-                               if btn:IsA("TextButton") and btn.Visible then
-                                   local bt = string.lower(btn.Text or "")
+                    local hasRoiKhoi = false
+                    local hasOk      = false
+                    local root = gui.Parent
+                    while root and not root:IsA("ScreenGui") do
+                        root = root.Parent
+                    end
+                    if root then
+                        for _, btn in ipairs(root:GetDescendants()) do
+                            if btn:IsA("TextButton") and btn.Visible then
+                                local bt = string.lower(btn.Text or "")
                                 -- "Rời Khỏi" / "roi khoi" / "leave" → bị kick thật
-                                   if string.find(bt,"r%u%u%u kh%u%u%u")
-                                   or string.find(bt,"roi khoi")
-                                   or string.find(bt,"rời khỏi")
-                                   or string.find(bt,"leave")
-                                   or bt == "rời khỏi" then
+                                if string.find(bt,"r%u%u%u kh%u%u%u")
+                                or string.find(bt,"roi khoi")
+                                or string.find(bt,"rời khỏi")
+                                or string.find(bt,"leave")
+                                or bt == "rời khỏi" then
                                     hasRoiKhoi = true
-                                   end
+                                end
                                 -- "Ok" / "okay" → vẫn trong game
-                                   if bt == "ok" or bt == "okay" then
+                                if bt == "ok" or bt == "okay" then
                                     hasOk = true
-                                   end
-                               end
-                           end
-                       end
+                                end
+                            end
+                        end
+                    end
 
-                       if hasRoiKhoi then
+                    if hasRoiKhoi then
                         -- Dạng 2: Mất kết nối thật → hop
-                           warn("🔴 773 dạng MẤT KẾT NỐI — bắt đầu hop")
-                           _hopLock = false
-                           hopServer(2, "773-disconnect")
-                       elseif hasOk then
+                        warn("🔴 773 dạng MẤT KẾT NỐI — bắt đầu hop")
+                        _hopLock = false
+                        hopServer(2, "773-disconnect")
+                    elseif hasOk then
                         -- Dạng 1: Dịch chuyển thất bại → chỉ dismiss
-                           closePopup()
-                           warn("🟡 773 dạng DỊCH CHUYỂN — chỉ dismiss")
-                       end
-                   end
-               end
-           end
-       end)
-  bend
+                        closePopup()
+                        warn("🟡 773 dạng DỊCH CHUYỂN — chỉ dismiss")
+                    end
+                end
+            end
+        end
+    end)
+end
 
     checkTriggerbot()
 
