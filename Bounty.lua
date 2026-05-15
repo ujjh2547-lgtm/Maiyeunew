@@ -326,8 +326,9 @@ local function closePopup()
         local pg = LP.PlayerGui
         for _, obj in ipairs(pg:GetDescendants()) do
             if obj:IsA("TextButton") and obj.Visible then
-                local t = string.lower(obj.Text or "")
-                if t == "ok" or t == "okay" then
+                local t = string.lower(string.gsub(obj.Text or "", "%s+", ""))
+                if t == "ok" or t == "okay" or t == "đóng" or t == "dong"
+                or t == "roikhoi" or t == "rờikhỏi" or t == "close" then
                     pcall(function() obj:Activate() end)
                 end
             end
@@ -336,11 +337,13 @@ local function closePopup()
 end
 
 -- ================================================================
--- [11] AUTO HOP
---      TeleportInitFailed: chỉ tắt popup OK
---      Không hop nếu vẫn còn trong game (character còn sống)
---      Chỉ hop khi bị kick thật sự (773/267/268 từ error message)
+-- [11] AUTO HOP — chống loop, chỉ hop 1 lần mỗi 30s
 -- ================================================================
+local _hopLock   = false
+local _lastHop   = 0
+local _hopCount  = 0
+local _popupDismissed = {} -- track popup đã dismiss rồi
+
 local function charReady()
     local c = LP.Character
     if not c or not c.Parent then return false end
@@ -351,8 +354,8 @@ end
 
 local function getNewServer()
     local ok, sv = pcall(function()
-        local HS   = game:GetService("HttpService")
-        local url  = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+        local HS  = game:GetService("HttpService")
+        local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
         local data = HS:JSONDecode(game:HttpGet(url))
         if not data or not data.data then return nil end
         local best, bestScore = nil, math.huge
@@ -360,8 +363,8 @@ local function getNewServer()
             if s.id ~= game.JobId
             and s.playing >= 2 and s.playing <= 11
             and s.maxPlayers >= s.playing then
-                local score = (s.ping or 999) + s.playing*10
-                if score < bestScore then bestScore=score; best=s.id end
+                local score = (s.ping or 999) + s.playing * 10
+                if score < bestScore then bestScore = score; best = s.id end
             end
         end
         return best
@@ -371,113 +374,92 @@ end
 
 local function hopServer(delay, reason)
     if not ENABLE_AUTOHOP then return end
-    if _hopLock then return end
-    if _hopCount >= 3 then
-        warn("⚠️ Hop quá nhiều — nghỉ 60s")
-        task.wait(60); _hopCount=0
+    -- Chặn hop nếu vẫn trong game
+    if charReady() then
+        warn("⚠️ Vẫn trong game — bỏ qua hop ["..reason.."]")
+        return
     end
-    if tick() - _lastHop < 15 then return end
-    _hopLock=true; _hopCount=_hopCount+1
-    warn("🔄 Hop ["..tostring(reason).."] sau "..tostring(delay).."s")
+    if _hopLock then
+        warn("⚠️ hopLock đang bật — bỏ qua ["..reason.."]")
+        return
+    end
+    local now = tick()
+    if now - _lastHop < 30 then
+        warn("⚠️ Hop cooldown còn "..(30-(now-_lastHop)).."s")
+        return
+    end
+    -- Giới hạn cứng: tối đa 3 hop mỗi 5 phút
+    if _hopCount >= 3 then
+        warn("⚠️ Đã hop 3 lần — chờ 5 phút")
+        task.spawn(function()
+            task.wait(300); _hopCount = 0
+            warn("✅ Reset hop counter")
+        end)
+        return
+    end
+    _hopLock  = true
+    _lastHop  = now
+    _hopCount = _hopCount + 1
+    warn("🔄 Hop ["..reason.."] lần ".._hopCount.." — sau "..delay.."s")
     task.spawn(function()
         task.wait(delay)
-        local w=0
-        while not charReady() and w<10 do task.wait(0.5); w=w+0.5 end
-        task.wait(0.3+math.random()*0.3)
-        _lastHop=tick()
-        local sv=getNewServer()
+        -- Kiểm tra lại lần cuối trước khi hop
+        if charReady() then
+            warn("✅ Đã vào game lại — huỷ hop")
+            _hopLock = false
+            return
+        end
+        local sv = getNewServer()
+        local ok = false
         if sv then
-            warn("✅ Server mới")
-            local ok=pcall(function()
+            ok = pcall(function()
                 TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
             end)
-            if not ok then
-                task.wait(2)
-                pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
-            end
-        else
+        end
+        if not ok then
+            task.wait(2)
             pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
         end
-        task.wait(12); _hopLock=false
+        -- Unlock sau 30s dù thành công hay không
+        task.wait(30)
+        _hopLock = false
     end)
 end
 
-task.spawn(function() while task.wait(300) do _hopCount=0 end end)
-
--- ================================================================
--- AUTO CLICK POPUP "OK" — chạy liên tục mỗi 0.5s
--- Tự bấm mọi nút OK/Okay xuất hiện trong game
--- ================================================================
-task.spawn(function()
-    while task.wait(0.5) do
-        pcall(function()
-            local pg = LP.PlayerGui
-            for _, obj in ipairs(pg:GetDescendants()) do
-                if obj:IsA("TextButton") and obj.Visible then
-                    local t = string.lower(obj.Text or "")
-                    if t == "ok" or t == "okay" then
-                        pcall(function() obj:Activate() end)
-                        warn("✅ Auto bấm OK popup")
-                    end
-                end
-            end
-        end)
-    end
-end)
-
--- ================================================================
--- TeleportInitFailed — bấm OK rồi hop server mới
--- Vì Bountynew đã cố hop nhưng fail → script mình hop thay
--- ================================================================
+-- TeleportInitFailed: CHỈ dismiss popup, KHÔNG hop
 TpSvc.TeleportInitFailed:Connect(function(plr, errMsg, errCode)
     if plr ~= LP then return end
-    warn("TeleportInitFailed: "..tostring(errCode).." | "..tostring(errMsg))
-
-    -- Bấm OK ngay
+    warn("TeleportInitFailed code="..tostring(errCode).." — chỉ dismiss popup")
     task.spawn(function()
-        for i = 1, 5 do
-            task.wait(0.3)
-            pcall(function()
-                local pg = LP.PlayerGui
-                for _, obj in ipairs(pg:GetDescendants()) do
-                    if obj:IsA("TextButton") and obj.Visible then
-                        local t = string.lower(obj.Text or "")
-                        if t == "ok" or t == "okay" then
-                            pcall(function() obj:Activate() end)
-                        end
-                    end
-                end
-            end)
+        task.wait(0.3)
+        closePopup()
+    end)
+end)
+
+LP.CharacterRemoving:Connect(function()
+    task.spawn(function()
+        task.wait(15) -- chờ respawn
+        if not charReady() then
+            hopServer(2, "NoSpawn")
         end
     end)
-
-    -- Hop server khác sau 2s
-    -- TeleportInitFailed = Bountynew cố hop nhưng fail
-    -- → cần hop server khác thay thế
-    task.wait(2)
-    _hopLock = false
-    _lastHop = 0
-    hopServer(1, "773-TpFailed")
 end)
 
 -- ================================================================
--- [12] HEARTBEAT — detect 267/773 THẬT SỰ
---      Chỉ hop khi error message xác nhận bị kick khỏi server
---      Không hop khi TeleportInitFailed vì vẫn trong game
+-- [12] HEARTBEAT — chỉ dismiss popup 773, KHÔNG hop khi còn game
 -- ================================================================
 local _lastErrCheck   = 0
 local _lastTgtCheck   = 0
 local _lastPopupCheck = 0
+local _lastErrMsg     = ""
 
 local PATTERNS_773 = {
-    "773",
-    "dich chuyen that bai", "dịch chuyển thất bại",
-    "dia diem bi han che",  "địa điểm bị hạn chế",
-    "co gang dich chuyen",  "cố gắng dịch chuyển",
-    "disconnect", "reconnect", "lost connection",
-    "mất kết nối", "roi khoi", "rời khỏi",
-    "server closed", "restricted", "place restricted",
-    "không thể kết nối", "kết nối lại không thành công",
+    "773", "disconnect", "reconnect", "lost connection",
+    "mất kết nối", "mat ket noi", "rời khỏi", "roi khoi",
+    "server closed", "dịch chuyển thất bại", "dich chuyen that bai",
+    "địa điểm bị hạn chế", "dia diem bi han che",
+    "bị hạn chế", "bi han che", "mã lỗi: 773", "ma loi: 773",
+    "restricted", "place restricted",
 }
 local PATTERNS_267 = {
     "267", "kicked", "security", "violation",
@@ -496,72 +478,91 @@ end
 RunService.Heartbeat:Connect(function()
     local now = tick()
 
-    -- Poll GuiService 0.3s
-    if now - _lastErrCheck >= 0.3 then
+    -- Poll GuiService error
+    if now - _lastErrCheck >= 0.5 then
         _lastErrCheck = now
         pcall(function()
             local m = GuiSvc:GetErrorMessage() or ""
             if m ~= "" and m ~= _lastErrMsg then
                 _lastErrMsg = m
-                warn("🚨 Error: "..m)
-                -- Chỉ hop khi error message xác nhận bị kick
+                warn("🚨 ErrorMsg: "..m)
                 if matchP(m, PATTERNS_773) then
-                    -- Kiểm tra còn trong game không
+                    -- Luôn dismiss popup trước
+                    closePopup()
+                    -- Chỉ hop nếu thật sự bị kick
                     if not charReady() then
-                        _hopLock=false; hopServer(1, "773")
-                    else
-                        -- Vẫn trong game → chỉ tắt popup
-                        closePopup()
-                        warn("773 nhưng vẫn trong game — không hop")
+                        task.wait(1)
+                        if not charReady() then
+                            hopServer(2, "773-err")
+                        end
                     end
                 elseif matchP(m, PATTERNS_267) then
-                    _hopLock=false; hopServer(8, "267")
+                    hopServer(10, "267-err")
                 elseif matchP(m, PATTERNS_268) then
-                    _hopLock=false; hopServer(5, "268")
+                    hopServer(5, "268-err")
                 end
             end
         end)
     end
 
--- Scan popup PlayerGui
-if now - _lastPopupCheck >= 0.5 then
-    _lastPopupCheck = now
-    pcall(function()
-        local pg = LP.PlayerGui
-        for _, obj in ipairs(pg:GetDescendants()) do
-            if (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Visible then
-                local t = obj.Text or ""
-                if t ~= "" and matchP(t, PATTERNS_773) then
-                    warn("🚨 Popup 773 detect: "..t:sub(1,50))
-                    -- Auto bấm OK
-                    pcall(function()
-                        local pg2 = LP.PlayerGui
-                        for _, btn in ipairs(pg2:GetDescendants()) do
-                            if btn:IsA("TextButton") and btn.Visible then
-                                local bt = string.lower(btn.Text or "")
-                                if bt == "ok" or bt == "okay" then
-                                    btn:Activate()
-                                end
-                            end
-                        end
-                    end)
-                    -- Hop ngay không cần check charReady
-                    _hopLock = false
-                    hopServer(1, "773-popup")
-                elseif t ~= "" and matchP(t, PATTERNS_267) then
-                    _hopLock = false; hopServer(8, "267-popup")
-                end
-            end
-        end
-    end)
-end
+    -- Scan popup PlayerGui
+   if now - _lastPopupCheck >= 0.8 then
+       _lastPopupCheck = now
+       pcall(function()
+           local pg = LP.PlayerGui
+           for _, gui in ipairs(pg:GetDescendants()) do
+               if (gui:IsA("TextLabel") or gui:IsA("TextBox")) and gui.Visible then
+                   local t = gui.Text or ""
+                   if t ~= "" and matchP(t, PATTERNS_773) then
+                    -- Kiểm tra button để phân biệt 2 dạng
+                       local hasRoiKhoi = false
+                       local hasOk      = false
+                       local root = gui.Parent
+                       while root and not root:IsA("ScreenGui") do
+                           root = root.Parent
+                       end
+                       if root then
+                           for _, btn in ipairs(root:GetDescendants()) do
+                               if btn:IsA("TextButton") and btn.Visible then
+                                   local bt = string.lower(btn.Text or "")
+                                -- "Rời Khỏi" / "roi khoi" / "leave" → bị kick thật
+                                   if string.find(bt,"r%u%u%u kh%u%u%u")
+                                   or string.find(bt,"roi khoi")
+                                   or string.find(bt,"rời khỏi")
+                                   or string.find(bt,"leave")
+                                   or bt == "rời khỏi" then
+                                    hasRoiKhoi = true
+                                   end
+                                -- "Ok" / "okay" → vẫn trong game
+                                   if bt == "ok" or bt == "okay" then
+                                    hasOk = true
+                                   end
+                               end
+                           end
+                       end
+
+                       if hasRoiKhoi then
+                        -- Dạng 2: Mất kết nối thật → hop
+                           warn("🔴 773 dạng MẤT KẾT NỐI — bắt đầu hop")
+                           _hopLock = false
+                           hopServer(2, "773-disconnect")
+                       elseif hasOk then
+                        -- Dạng 1: Dịch chuyển thất bại → chỉ dismiss
+                           closePopup()
+                           warn("🟡 773 dạng DỊCH CHUYỂN — chỉ dismiss")
+                       end
+                   end
+               end
+           end
+       end)
+  bend
 
     checkTriggerbot()
 
     if now - _lastTgtCheck >= 0.5 then
         _lastTgtCheck = now
         if not TGT or not isValid(TGT) or tgtDist() > MAX_DIST then
-            TGT=pickTarget(); TGT_AT=now
+            TGT = pickTarget(); TGT_AT = now
         end
     end
 end)
