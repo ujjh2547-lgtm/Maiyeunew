@@ -1,7 +1,7 @@
 -- ================================================================
 --  Bounty.lua — MAIN SCRIPT VIP
---  Fix 773 dạng 1: bấm OK 1 lần, để Bountynew tự xử lý
---  Fix 773 dạng 2: game tối > 8s → hop
+--  KHÔNG có TeleportService hop — để Bountynew lo hoàn toàn
+--  Chỉ detect 773 "Mất kết nối" thật → tự rejoin
 -- ================================================================
 
 local Players    = game:GetService("Players")
@@ -23,7 +23,6 @@ local ENABLE_PSILENT    = CFG["AimSilent"]       ~= false
 local ENABLE_TRIGGERBOT = CFG["Triggerbot"]      == true
 local ENABLE_M1         = CFG["M1 click"]        ~= false
 local ENABLE_AUTOSKILL  = SKILL_CFG["Enabled"]   ~= false
-local ENABLE_AUTOHOP    = CFG["Auto server hop"] ~= false
 local ENABLE_GUI        = CFG["Gui"]             ~= false
 
 local SKILL_Z     = SKILL_CFG["Z"]     ~= false
@@ -73,10 +72,6 @@ local _kills       = 0
 local _cpsCount    = 0
 local _cpsLast     = tick()
 local _cps         = 0
-local _hopCount    = 0
-local _lastHop     = 0
-local _hopLock     = false
-local _lastErrMsg  = ""
 local _lastDamaged = {}
 local _m1Last      = 0
 local _m1Burst     = 0
@@ -84,32 +79,7 @@ local _m1BurstCD   = 0
 local _lastSkillCD = 0
 
 -- ================================================================
--- [4] CLICK OK — đúng 1 lần, cooldown 5s
---     Không spam, không loop liên tục
--- ================================================================
-local _lastClickOK = 0
-
-local function clickOK()
-    local now = tick()
-    if now - _lastClickOK < 5 then return end
-    _lastClickOK = now
-    pcall(function()
-        local pg = LP.PlayerGui
-        for _, obj in ipairs(pg:GetDescendants()) do
-            if obj:IsA("TextButton") and obj.Visible then
-                local t = string.lower(obj.Text or "")
-                if t == "ok" or t == "okay" then
-                    obj:Activate()
-                    warn("✅ Bấm OK")
-                    return
-                end
-            end
-        end
-    end)
-end
-
--- ================================================================
--- [5] TARGET SYSTEM
+-- [4] TARGET SYSTEM
 -- ================================================================
 local function isValid(p)
     if not p or not p:IsA("Player") then return false end
@@ -167,15 +137,15 @@ local function isVisible(pos)
 end
 
 -- ================================================================
--- [6] HOP SERVER — chỉ dùng cho 773 dạng 2 (game tối thật)
+-- [5] DETECT 773 "MẤT KẾT NỐI" THẬT → TỰ REJOIN
+--     Popup: "Mất kết nối" + nút "Rời Khỏi"
+--     → Teleport rejoin ngay trước khi bị kick hoàn toàn
 -- ================================================================
-local function charReady()
-    local c = LP.Character
-    if not c or not c.Parent then return false end
-    local h = c:FindFirstChildOfClass("Humanoid")
-    if not h or h.Health <= 0 then return false end
-    return c:FindFirstChild("HumanoidRootPart") ~= nil
-end
+local _rejoinLock    = false
+local _lastRejoin    = 0
+local _lastErrMsg    = ""
+local _lastErrCheck  = 0
+local _lastPopCheck  = 0
 
 local function getNewServer()
     local ok, sv = pcall(function()
@@ -197,65 +167,52 @@ local function getNewServer()
     return ok and sv or nil
 end
 
-local function hopServer(delay, reason)
-    if not ENABLE_AUTOHOP then return end
-    if _hopLock then return end
-    if _hopCount >= 3 then
-        warn("⚠️ Hop quá nhiều — nghỉ 60s")
-        task.wait(60); _hopCount=0
-    end
-    if tick() - _lastHop < 15 then return end
-    _hopLock=true; _hopCount=_hopCount+1
-    warn("🔄 Hop ["..tostring(reason).."] sau "..tostring(delay).."s")
+local function rejoinServer(reason)
+    if _rejoinLock then return end
+    if tick() - _lastRejoin < 15 then return end
+    _rejoinLock = true
+    _lastRejoin = tick()
+    warn("🔄 Rejoin ["..tostring(reason).."]")
     task.spawn(function()
-        task.wait(delay)
-        local w=0
-        while not charReady() and w<10 do task.wait(0.5); w=w+0.5 end
-        task.wait(0.5+math.random()*0.5)
-        _lastHop=tick()
-        local sv=getNewServer()
+        -- Thử teleport sang server mới ngay
+        local sv = getNewServer()
         if sv then
-            warn("✅ Server mới")
-            local ok=pcall(function()
+            warn("✅ Rejoin server: "..sv:sub(1,8).."...")
+            pcall(function()
                 TpSvc:TeleportToPlaceInstance(game.PlaceId, sv, LP)
             end)
-            if not ok then
-                task.wait(2)
-                pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
-            end
         else
-            pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
+            warn("⚠️ Rejoin thường")
+            pcall(function()
+                TpSvc:Teleport(game.PlaceId, LP)
+            end)
         end
-        task.wait(12); _hopLock=false
+        task.wait(20)
+        _rejoinLock = false
     end)
 end
 
-task.spawn(function() while task.wait(300) do _hopCount=0 end end)
+-- Pattern CHỈ cho 773 "Mất kết nối" thật
+-- KHÔNG bao gồm "Dịch Chuyển" vì đó là TeleportInitFailed
+local PATTERNS_773_REAL = {
+    "mat ket noi",
+    "mất kết nối",
+    "ket noi lai khong thanh cong",
+    "kết nối lại không thành công",
+    "lost connection",
+    "disconnect",
+}
+
+local function is773Real(m)
+    local ml = string.lower(m)
+    for _, p in ipairs(PATTERNS_773_REAL) do
+        if string.find(ml, p, 1, true) then return true end
+    end
+    return false
+end
 
 -- ================================================================
--- [7] TELEPORT INIT FAILED
---     Dạng 1: Bountynew hop thất bại → bấm OK 1 lần
---     Để Bountynew tự thử lại, không can thiệp thêm
--- ================================================================
-TpSvc.TeleportInitFailed:Connect(function(plr, errMsg, errCode)
-    if plr ~= LP then return end
-    warn("TeleportInitFailed: "..tostring(errCode))
-    -- Bấm OK đúng 1 lần sau 0.5s
-    task.delay(0.5, clickOK)
-    -- Không hop — để Bountynew tự xử lý
-end)
-
-LP.CharacterRemoving:Connect(function()
-    task.spawn(function()
-        task.wait(12)
-        if not charReady() then
-            _hopLock=false; hopServer(2, "NoSpawn")
-        end
-    end)
-end)
-
--- ================================================================
--- [8] KILL + DEATH TRACKING
+-- [6] KILL + DEATH TRACKING
 -- ================================================================
 local function setupKillTrack(p)
     if not p or p == LP then return end
@@ -299,13 +256,11 @@ LP.CharacterAdded:Connect(function() task.wait(0.3); setupMyDeath() end)
 task.delay(1, setupMyDeath)
 
 local function markDamage()
-    if TGT and isValid(TGT) then
-        _lastDamaged[TGT.Name]=tick()
-    end
+    if TGT and isValid(TGT) then _lastDamaged[TGT.Name]=tick() end
 end
 
 -- ================================================================
--- [9] pSILENT
+-- [7] pSILENT
 -- ================================================================
 local function psilentSnap(doAction)
     if not ENABLE_PSILENT or not TGT then doAction(); return end
@@ -316,13 +271,13 @@ local function psilentSnap(doAction)
     if not isVisible(pred) then doAction(); return end
     local origCF=Camera.CFrame
     local dir=(pred-Camera.CFrame.Position).Unit
-    Camera.CFrame=CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position+dir)
+    Camera.CFrame=CFrame.new(Camera.CFrame.Position,Camera.CFrame.Position+dir)
     doAction()
     task.defer(function() pcall(function() Camera.CFrame=origCF end) end)
 end
 
 -- ================================================================
--- [10] TRIGGERBOT
+-- [8] TRIGGERBOT
 -- ================================================================
 local _tbLast=0
 local function checkTriggerbot()
@@ -334,7 +289,7 @@ local function checkTriggerbot()
         local mh=mc:FindFirstChildOfClass("Humanoid")
         if not mh or mh.Health<=0 then return end
         local unitRay=Camera:ScreenPointToRay(
-            Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            Camera.ViewportSize.X/2,Camera.ViewportSize.Y/2)
         local params=RaycastParams.new()
         params.FilterDescendantsInstances={mc}
         params.FilterType=Enum.RaycastFilterType.Exclude
@@ -345,7 +300,9 @@ local function checkTriggerbot()
                 if result.Instance:IsDescendantOf(p.Character) then
                     _tbLast=now; _lastDamaged[p.Name]=tick()
                     pcall(function()
-                        mouse1press(); task.wait(0.018+math.random()*0.01); mouse1release()
+                        mouse1press()
+                        task.wait(0.018+math.random()*0.01)
+                        mouse1release()
                     end)
                     return
                 end
@@ -355,7 +312,7 @@ local function checkTriggerbot()
 end
 
 -- ================================================================
--- [11] M1 HUMANIZED
+-- [9] M1 HUMANIZED
 -- ================================================================
 local function doM1(sx, sy)
     local now=tick()
@@ -381,7 +338,7 @@ local function doM1(sx, sy)
 end
 
 -- ================================================================
--- [12] PRESS KEY
+-- [10] PRESS KEY
 -- ================================================================
 local function pressKey(keyCode)
     markDamage()
@@ -413,326 +370,55 @@ local function pressKey(keyCode)
 end
 
 -- ================================================================
--- [13] HEARTBEAT
---      773 dạng 1: popup "Dịch Chuyển Thất Bại" → bấm OK 1 lần
---      773 dạng 2: game tối > 8s hoặc mất kết nối thật → hop
---      267: hop sau 8s
+-- [11] HEARTBEAT — detect 773 thật, scan popup
 -- ================================================================
-local _lastErrCheck   = 0
-local _lastTgtCheck   = 0
-local _lastPopupCheck = 0
-local _darkStart      = 0
-
-local function isGameDark()
-    local c=LP.Character
-    if not c or not c.Parent then return true end
-    local h=c:FindFirstChildOfClass("Humanoid")
-    if not h then return true end
-    if h.Health<=0 then return false end
-    return not c:FindFirstChild("HumanoidRootPart")
-end
-
-local PATTERNS_773_REAL = {
-    "mất kết nối", "mat ket noi",
-    "disconnect", "reconnect", "lost connection",
-    "server closed",
-    "kết nối lại không thành công",
-    "không nhận được phản hồi",
-    "roi khoi", "rời khỏi",
-}
-local PATTERNS_267 = {
-    "267","kicked","security","violation",
-    "bị đuổi","bi duoi","vi phạm",
-}
-local PATTERNS_268 = { "268" }
-
--- Pattern 773 dạng 1 — chỉ bấm OK
-local PATTERNS_773_POPUP = {
-    "dich chuyen that bai", "dịch chuyển thất bại",
-    "dia diem bi han che",  "địa điểm bị hạn chế",
-    "co gang dich chuyen",  "cố gắng dịch chuyển",
-}
-
-local function matchP(m, pats)
-    local ml=string.lower(m)
-    for _, p in ipairs(pats) do
-        if string.find(ml,p,1,true) then return true end
-    end
-    return false
-end
+local _lastTgtCheck = 0
 
 RunService.Heartbeat:Connect(function()
-    local now=tick()
+    local now = tick()
 
-    -- Detect game tối > 8s → 773 thật → hop
-    if isGameDark() then
-        if _darkStart==0 then _darkStart=now end
-        if now-_darkStart>8 then
-            warn("🚨 Game tối > 8s → hop")
-            _darkStart=0; _hopLock=false
-            hopServer(1,"773-dark")
-        end
-    else
-        _darkStart=0
-    end
-
-    -- Poll GuiService 0.5s
-    if now-_lastErrCheck>=0.5 then
-        _lastErrCheck=now
+    -- Poll GuiService 0.5s — chỉ bắt 773 thật
+    if now - _lastErrCheck >= 0.5 then
+        _lastErrCheck = now
         pcall(function()
-            local m=GuiSvc:GetErrorMessage() or ""
-            if m~="" and m~=_lastErrMsg then
-                _lastErrMsg=m
-                warn("🚨 GuiErr: "..m)
-                if matchP(m,PATTERNS_773_REAL) then
-                    _hopLock=false; hopServer(1,"773-real")
-                elseif matchP(m,PATTERNS_267) then
-                    _hopLock=false; hopServer(8,"267")
-                elseif matchP(m,PATTERNS_268) then
-                    _hopLock=false; hopServer(5,"268")
-                end
-                -- 773 dạng 1 chỉ bấm OK, không hop
-                if matchP(m,PATTERNS_773_POPUP) then
-                    clickOK()
+            local m = GuiSvc:GetErrorMessage() or ""
+            if m ~= "" and m ~= _lastErrMsg then
+                _lastErrMsg = m
+                if is773Real(m) then
+                    warn("🚨 773 thật: "..m:sub(1,50))
+                    rejoinServer("773-GuiErr")
                 end
             end
         end)
     end
 
-    -- Scan popup 1s
-    if now-_lastPopupCheck>=1 then
-        _lastPopupCheck=now
+    -- Scan popup 0.5s — detect "Mất kết nối" + "Rời Khỏi"
+    if now - _lastPopCheck >= 0.5 then
+        _lastPopCheck = now
         pcall(function()
-            local pg=LP.PlayerGui
+            local pg = LP.PlayerGui
+            local found773 = false
+
             for _, obj in ipairs(pg:GetDescendants()) do
                 if (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Visible then
-                    local t=obj.Text or ""
-                    if t~="" then
-                        if matchP(t,PATTERNS_773_POPUP) then
-                            -- Dạng 1: chỉ bấm OK
-                            clickOK()
-                        elseif matchP(t,PATTERNS_773_REAL) then
-                            -- Dạng 2: hop
-                            _hopLock=false; hopServer(1,"773-popup-real")
-                        elseif matchP(t,PATTERNS_267) then
-                            _hopLock=false; hopServer(8,"267-popup")
-                        end
+                    local t = obj.Text or ""
+                    if is773Real(t) then
+                        found773 = true
+                        warn("🚨 Popup 773 thật: "..t:sub(1,50))
+                        break
                     end
                 end
+            end
+
+            if found773 then
+                -- Rejoin ngay trước khi bấm Rời Khỏi
+                rejoinServer("773-popup")
             end
         end)
     end
 
     checkTriggerbot()
 
-    if now-_lastTgtCheck>=0.5 then
-        _lastTgtCheck=now
-        if not TGT or not isValid(TGT) or tgtDist()>MAX_DIST then
-            TGT=pickTarget(); TGT_AT=now
-        end
-    end
-end)
-
--- ================================================================
--- [14] GUI VIP — KÉO ĐƯỢC
--- ================================================================
-if ENABLE_GUI then
-    local G=Instance.new("ScreenGui")
-    G.Name="BountyGUI"; G.ResetOnSpawn=false
-    G.DisplayOrder=999
-    G.Parent=LP:WaitForChild("PlayerGui")
-
-    local F=Instance.new("Frame",G)
-    F.Size=UDim2.new(0,215,0,175)
-    F.Position=UDim2.new(0,10,0.4,0)
-    F.BackgroundColor3=Color3.fromRGB(8,8,8)
-    F.BackgroundTransparency=0.1
-    F.BorderSizePixel=0; F.Active=true; F.Visible=false
-    Instance.new("UICorner",F).CornerRadius=UDim.new(0,14)
-    local St=Instance.new("UIStroke",F); St.Thickness=1.5
-
-    local TB=Instance.new("Frame",F)
-    TB.Size=UDim2.new(1,0,0,28); TB.Position=UDim2.new(0,0,0,0)
-    TB.BackgroundColor3=Color3.fromRGB(20,20,20)
-    TB.BackgroundTransparency=0.3
-    TB.BorderSizePixel=0; TB.Active=true
-    Instance.new("UICorner",TB).CornerRadius=UDim.new(0,14)
-
-    local TL=Instance.new("TextLabel",TB)
-    TL.Size=UDim2.new(1,-10,1,0); TL.Position=UDim2.new(0,10,0,0)
-    TL.BackgroundTransparency=1; TL.Text="⚡ BOUNTY VIP"
-    TL.TextSize=13; TL.Font=Enum.Font.GothamBold
-    TL.TextColor3=Color3.fromRGB(255,215,0)
-    TL.TextXAlignment=Enum.TextXAlignment.Left
-
-    local Div=Instance.new("Frame",F)
-    Div.Size=UDim2.new(1,-16,0,1); Div.Position=UDim2.new(0,8,0,29)
-    Div.BackgroundColor3=Color3.fromRGB(60,60,60); Div.BorderSizePixel=0
-
-    local function lb(pos,txt,color)
-        local l=Instance.new("TextLabel",F)
-        l.Size=UDim2.new(1,-16,0,19); l.Position=pos
-        l.BackgroundTransparency=1; l.Text=txt; l.TextSize=12
-        l.Font=Enum.Font.Gotham
-        l.TextColor3=color or Color3.fromRGB(220,220,220)
-        l.TextXAlignment=Enum.TextXAlignment.Left
-        return l
-    end
-
-    local L1=lb(UDim2.new(0,8,0,33), "📶 FPS:--  Ping:--ms", Color3.fromRGB(120,255,120))
-    local L2=lb(UDim2.new(0,8,0,54), "🖱️ CPS:0",             Color3.fromRGB(130,200,255))
-    local L3=lb(UDim2.new(0,8,0,75), "👥 Players:0",          Color3.fromRGB(255,200,120))
-    local L4=lb(UDim2.new(0,8,0,96), "💀 Chết:0",             Color3.fromRGB(255,100,100))
-    local L5=lb(UDim2.new(0,8,0,117),"☠️ Kill:0",             Color3.fromRGB(100,255,150))
-    local L6=lb(UDim2.new(0,8,0,138),"🎯 None",               Color3.fromRGB(255,255,150))
-    local L7=lb(UDim2.new(0,8,0,158),"⏱ 00:00:00",            Color3.fromRGB(180,180,180))
-
-    local _drag=false; local _ds; local _fs
-    TB.InputBegan:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.Touch
-        or i.UserInputType==Enum.UserInputType.MouseButton1 then
-            _drag=true; _ds=i.Position; _fs=F.Position
-        end
-    end)
-    TB.InputEnded:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.Touch
-        or i.UserInputType==Enum.UserInputType.MouseButton1 then _drag=false end
-    end)
-    UIS.InputChanged:Connect(function(i)
-        if not _drag then return end
-        if i.UserInputType~=Enum.UserInputType.MouseMovement
-        and i.UserInputType~=Enum.UserInputType.Touch then return end
-        local d=i.Position-_ds
-        F.Position=UDim2.new(_fs.X.Scale,_fs.X.Offset+d.X,_fs.Y.Scale,_fs.Y.Offset+d.Y)
-    end)
-
-    local fps=60; local t0=os.clock()
-    RunService.RenderStepped:Connect(function(dt)
-        if dt>0 then fps=math.floor(1/dt) end
-        local c=Color3.fromHSV((os.clock()%4)/4,.9,1)
-        TL.TextColor3=c; St.Color=c
-    end)
-    task.spawn(function()
-        while task.wait(0.5) do
-            local ping=math.floor(LP:GetNetworkPing()*1000)
-            local e=os.clock()-t0
-            local tName=(TGT and isValid(TGT)) and TGT.Name or "None"
-            if ping<80 then L1.TextColor3=Color3.fromRGB(120,255,120)
-            elseif ping<150 then L1.TextColor3=Color3.fromRGB(255,220,80)
-            else L1.TextColor3=Color3.fromRGB(255,80,80) end
-            L1.Text=("📶 FPS:%d  Ping:%dms"):format(fps,ping)
-            L2.Text=("🖱️ CPS:%d"):format(_cps)
-            L3.Text=("👥 Players:%d"):format(#Players:GetPlayers())
-            L4.Text=("💀 Chết:%d"):format(_myDeaths)
-            L5.Text=("☠️ Kill:%d"):format(_kills)
-            L6.Text=("🎯 %s"):format(tName)
-            L7.Text=("⏱ %02d:%02d:%02d"):format(
-                math.floor(e/3600),math.floor(e%3600/60),math.floor(e%60))
-        end
-    end)
-    task.delay(0.8,function() F.Visible=true end)
-end
-
--- ================================================================
--- [15] NPC / QUEST BYPASS
--- ================================================================
-task.spawn(function()
-    while task.wait(0.2) do
-        pcall(function()
-            local pg=LP.PlayerGui
-            for _, gui in ipairs(pg:GetChildren()) do
-                if gui:IsA("ScreenGui") and gui.Enabled then
-                    local name=string.lower(gui.Name)
-                    if string.find(name,"dialogue") or string.find(name,"quest")
-                    or string.find(name,"npc") or string.find(name,"shop")
-                    or string.find(name,"interact") or string.find(name,"talk")
-                    or string.find(name,"mission") then
-                        local closed=false
-                        for _, obj in ipairs(gui:GetDescendants()) do
-                            if obj:IsA("TextButton") and obj.Visible then
-                                local t=obj.Text or ""
-                                local tl=string.lower(t)
-                                if t=="Bỏ qua" or t=="bỏ qua"
-                                or string.find(tl,"bo qua")
-                                or string.find(tl,"skip")
-                                or string.find(tl,"close")
-                                or string.find(tl,"cancel")
-                                or tl=="x"
-                                or string.find(tl,"thoat")
-                                or string.find(tl,"next")
-                                or string.find(tl,"tiep") then
-                                    pcall(function() obj:Activate() end)
-                                    closed=true
-                                end
-                            end
-                        end
-                        if not closed then gui.Enabled=false end
-                    end
-                end
-            end
-            local c=LP.Character
-            if c then
-                c:SetAttribute("InSafeZone",false)
-                local ff=c:FindFirstChildOfClass("ForceField")
-                if ff then ff:Destroy() end
-            end
-        end)
-    end
-end)
-
--- ================================================================
--- [16] SPAM SKILL
--- ================================================================
-if ENABLE_AUTOSKILL then
-    task.spawn(function()
-        while task.wait(SKILL_DELAY) do
-            if not TGT or not isValid(TGT) then continue end
-            pcall(function()
-                local mc=LP.Character; if not mc then return end
-                local mh=mc:FindFirstChildOfClass("Humanoid")
-                if not mh or mh.Health<=0 then return end
-                if tgtDist()>80 then return end
-                local now=tick()
-                if now-_lastSkillCD<0.12 then return end
-                if SKILL_Z then pressKey(Enum.KeyCode.Z); _lastSkillCD=tick(); task.wait(0.12+math.random()*0.05) end
-                if SKILL_X then pressKey(Enum.KeyCode.X); _lastSkillCD=tick(); task.wait(0.12+math.random()*0.05) end
-                if SKILL_C then pressKey(Enum.KeyCode.C); _lastSkillCD=tick(); task.wait(0.12+math.random()*0.05) end
-                if SKILL_F then pressKey(Enum.KeyCode.F); _lastSkillCD=tick(); task.wait(0.12+math.random()*0.05) end
-                if SKILL_V then pressKey(Enum.KeyCode.V); _lastSkillCD=tick(); task.wait(0.12+math.random()*0.05) end
-            end)
-        end
-    end)
-end
-
--- ================================================================
--- [17] SPAM M1
--- ================================================================
-if ENABLE_M1 then
-    task.spawn(function()
-        while task.wait(0.04) do
-            if not TGT or not isValid(TGT) then continue end
-            pcall(function()
-                local mc=LP.Character; if not mc then return end
-                local mh=mc:FindFirstChildOfClass("Humanoid")
-                if not mh or mh.Health<=0 then return end
-                local fc=getFruitCFG(mc)
-                if not fc or not fc.active then return end
-                if tgtDist()>25 then return end
-                local tc=TGT.Character; if not tc then return end
-                local tr=tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
-                local pred=ENABLE_PSILENT and getPredPos(tr) or tr.Position
-                local sp,onScreen=Camera:WorldToViewportPoint(pred)
-                if not onScreen or sp.Z<=0 then return end
-                local vp=Camera.ViewportSize
-                doM1(
-                    math.clamp(sp.X+math.random(-4,4),1,vp.X-1),
-                    math.clamp(sp.Y+math.random(-4,4),1,vp.Y-1)
-                )
-            end)
-        end
-    end)
-end
-
-print("✅ Bounty VIP | pSilent="..tostring(ENABLE_PSILENT)
-    .." | Triggerbot="..tostring(ENABLE_TRIGGERBOT)
-    .." | HitChance="..HIT_CHANCE.."%")
+    if now - _lastTgtCheck >= 0.5 then
+        _lastTgtCheck = now
+        if not TGT or not isValid(TGT
