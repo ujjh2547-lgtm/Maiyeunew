@@ -1,16 +1,340 @@
-# Protected by BI EM Encoder - bounty.lua
-# Dùng cho PHP, HTML, JS... (chỉ tạm thời)
+-- ================================================================
+--  Bounty.lua — MAIN SCRIPT (upload lên GitHub raw)
+--  Không chứa config của Bountynew.lua
+--  Đọc config từ getgenv() do script config (Dạng 2) set sẵn
+-- ================================================================
 
-import zlib, base64
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TpSvc      = game:GetService("TeleportService")
+local GuiSvc     = game:GetService("GuiService")
+local LP         = Players.LocalPlayer
 
-data = "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"
-key = "vBgQTsdPlxW6"
+-- ================================================================
+-- [1] ĐỌC CONFIG TỪ GETGENV (do script config set)
+-- ================================================================
+local CFG = getgenv().BountyExtra or {}
 
-enc = base64.b64decode(data)
-kb = key.encode()
-comp = bytes([b ^ kb[i % len(kb)] for i, b in enumerate(enc)])
-original_code = zlib.decompress(comp).decode('utf-8')
+local ENABLE_AIMBOT    = CFG["Aimbot"]      ~= false
+local ENABLE_M1        = CFG["M1 click"]    ~= false
+local ENABLE_FASTATTK  = CFG["Fast Attack"] ~= false
+local ENABLE_AUTOSKILL = (CFG["Auto Skill"] or {})["Enabled"] ~= false
+local ENABLE_AUTOHOP   = CFG["Auto server hop"] ~= false
+local ENABLE_GUI       = CFG["Gui"]         ~= false
 
-print("=== File đã được giải mã ===")
-print(original_code)
-# Hoặc ghi ra file: open("decoded.txt","w").write(original_code)
+local SKILL_Z = (CFG["Auto Skill"] or {})["Z"] ~= false
+local SKILL_X = (CFG["Auto Skill"] or {})["X"] ~= false
+local SKILL_C = (CFG["Auto Skill"] or {})["C"] ~= false
+local SKILL_V = (CFG["Auto Skill"] or {})["V"] == true   -- default false
+local SKILL_F = (CFG["Auto Skill"] or {})["F"] ~= false
+
+local M1_WHITELIST = CFG["M1"] or {
+    ["kitsune"]=true, ["t-rex"]=true,  ["dragon"]=true,
+    ["blade"]=true,   ["dough"]=true,  ["gas"]=true,
+    ["pain"]=true,    ["leopard"]=true,
+}
+
+-- ================================================================
+-- [2] M1 WHITELIST CHECK
+-- ================================================================
+local function canM1(char)
+    if not ENABLE_M1 then return false end
+    local t = char and char:FindFirstChildOfClass("Tool")
+    if not t then return false end
+    local s = string.lower((t.ToolTip or "").." "..(t.Name or ""))
+    for k in pairs(M1_WHITELIST) do
+        if string.find(s, k, 1, true) then return true end
+    end
+    return false
+end
+
+-- ================================================================
+-- [3] M1 TOKEN BUCKET
+-- ================================================================
+local _tokens   = 3.0
+local _lastFill = tick()
+local MAX_TOK   = 3.0
+local FILL_RATE = 2.5
+local _m1Last   = 0
+local M1_MIN_CD = 0.25
+
+local function getToken()
+    local now = tick()
+    local dt  = now - _lastFill
+    _lastFill = now
+    _tokens   = math.min(MAX_TOK, _tokens + dt * FILL_RATE)
+    if _tokens < 1 then return false end
+    _tokens = _tokens - 1
+    return true
+end
+
+local function doM1(sx, sy)
+    if not ENABLE_M1 then return end
+    local now = tick()
+    if now - _m1Last < M1_MIN_CD + math.random()*0.05 then return end
+    if not getToken() then return end
+    _m1Last = now
+    local ox   = math.random(-4, 4)
+    local oy   = math.random(-4, 4)
+    local hold = 0.018 + math.random() * 0.016
+    task.spawn(function()
+        pcall(function()
+            mousemoveabs(sx + ox, sy + oy)
+            mouse1press()
+            task.wait(hold)
+            mouse1release()
+        end)
+    end)
+end
+
+-- ================================================================
+-- [4] AUTO HOP (773 / 267)
+-- ================================================================
+local _hopLock = false
+local _lastHop = 0
+local HOP_MIN  = 20
+
+local function charReady()
+    local c = LP.Character
+    if not c or not c.Parent then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    if not c:FindFirstChild("HumanoidRootPart") then return false end
+    return true
+end
+
+local function getNewServer()
+    local ok, result = pcall(function()
+        local HS  = game:GetService("HttpService")
+        local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)
+        local raw = game:HttpGet(url)
+        local data = HS:JSONDecode(raw)
+        if not data or not data.data then return nil end
+        local best, bestScore = nil, math.huge
+        for _, sv in ipairs(data.data) do
+            if sv.id ~= game.JobId
+            and sv.playing >= 2
+            and sv.playing <= 10
+            and sv.maxPlayers >= sv.playing then
+                local score = (sv.ping or 999) + (sv.playing * 10)
+                if score < bestScore then bestScore=score; best=sv.id end
+            end
+        end
+        return best
+    end)
+    return ok and result or nil
+end
+
+local function hopServer(delaySec)
+    if not ENABLE_AUTOHOP then return end
+    if _hopLock then return end
+    if tick() - _lastHop < HOP_MIN then return end
+    _hopLock = true
+    task.spawn(function()
+        task.wait(delaySec or 8)
+        local w = 0
+        while not charReady() and w < 15 do task.wait(0.5); w=w+0.5 end
+        task.wait(1.5)
+        _lastHop = tick()
+        local newSv = getNewServer()
+        if newSv then
+            local ok = pcall(function() TpSvc:TeleportToPlaceInstance(game.PlaceId, newSv, LP) end)
+            if not ok then task.wait(3); pcall(function() TpSvc:Teleport(game.PlaceId, LP) end) end
+        else
+            pcall(function() TpSvc:Teleport(game.PlaceId, LP) end)
+        end
+        task.wait(20); _hopLock = false
+    end)
+end
+
+TpSvc.TeleportInitFailed:Connect(function(plr)
+    if plr ~= LP then return end
+    hopServer(8 + math.random()*4)
+end)
+
+GuiSvc.ErrorMessageChanged:Connect(function()
+    local m = GuiSvc:GetErrorMessage() or ""
+    if string.find(m,"267") or string.find(m,"Security") then
+        hopServer(15 + math.random()*10)
+    elseif string.find(m,"773") or string.find(m,"reconnect") or string.find(m,"disconnect") then
+        hopServer(8 + math.random()*4)
+    end
+end)
+
+LP.CharacterRemoving:Connect(function()
+    task.spawn(function()
+        task.wait(12)
+        if not charReady() then hopServer(3 + math.random()*3) end
+    end)
+end)
+
+-- ================================================================
+-- [5] GUI FPS/PING (bật/tắt qua config)
+-- ================================================================
+if ENABLE_GUI then
+    local G = Instance.new("ScreenGui")
+    G.Name = "BountyGUI"; G.ResetOnSpawn = false
+    G.Parent = LP:WaitForChild("PlayerGui")
+
+    local F = Instance.new("Frame", G)
+    F.Size = UDim2.new(0,185,0,68)
+    F.Position = UDim2.new(0.5,-92.5,0.05,0)
+    F.BackgroundColor3 = Color3.fromRGB(15,15,15)
+    F.BackgroundTransparency = 0.1
+    F.BorderSizePixel = 0; F.Visible = false
+    Instance.new("UICorner", F).CornerRadius = UDim.new(0,12)
+    local St = Instance.new("UIStroke", F); St.Thickness = 2
+
+    local function lb(sz,pos,txt,fs,bold)
+        local l = Instance.new("TextLabel",F)
+        l.Size=sz; l.Position=pos
+        l.BackgroundTransparency=1
+        l.Text=txt; l.TextSize=fs
+        l.TextXAlignment=Enum.TextXAlignment.Center
+        l.Font=bold and Enum.Font.GothamBold or Enum.Font.GothamSemibold
+        return l
+    end
+
+    local TL = lb(UDim2.new(1,0,0,24),UDim2.new(0,0,0,0),"FPS • PING",15,true)
+    local IL = lb(UDim2.new(1,0,0,22),UDim2.new(0,0,0,26),"FPS:60|Ping:0ms",13,false)
+    local UL = lb(UDim2.new(1,0,0,18),UDim2.new(0,0,0,48),"Uptime:00:00:00",12,false)
+    TL.TextColor3 = Color3.fromRGB(255,215,0)
+    IL.TextColor3 = Color3.fromRGB(255,255,255)
+    UL.TextColor3 = Color3.fromRGB(200,200,200)
+
+    local fps=60; local t0=os.clock()
+    RunService.RenderStepped:Connect(function(dt)
+        if dt>0 then fps=math.floor(1/dt) end
+        local c=Color3.fromHSV((os.clock()%4)/4,.95,1)
+        TL.TextColor3=c; St.Color=c
+    end)
+    task.spawn(function()
+        while task.wait(0.5) do
+            IL.Text=("FPS:%d|Ping:%dms"):format(fps,math.floor(LP:GetNetworkPing()*1000))
+            local e=os.clock()-t0
+            UL.Text=("Uptime:%02d:%02d:%02d"):format(math.floor(e/3600),math.floor(e%3600/60),math.floor(e%60))
+        end
+    end)
+    task.delay(0.6,function() F.Visible=true end)
+end
+
+-- ================================================================
+-- [6] SAFEZONE / DIALOGUE BYPASS
+-- ================================================================
+task.spawn(function()
+    while task.wait(0.5) do
+        pcall(function()
+            local pg = LP.PlayerGui
+            local d = pg:FindFirstChild("DialogueGui")
+            if d then d.Enabled=false end
+            local q = pg:FindFirstChild("QuestGui")
+            if q then q.Enabled=false end
+            local c = LP.Character
+            if c then
+                c:SetAttribute("InSafeZone",false)
+                local ff = c:FindFirstChildOfClass("ForceField")
+                if ff then ff:Destroy() end
+            end
+        end)
+    end
+end)
+
+-- ================================================================
+-- [7] TARGET SYSTEM
+-- ================================================================
+local TGT    = nil
+local TGT_AT = 0
+
+local function isValid(p)
+    if not p or not p:IsA("Player") then return false end
+    if p == LP then return false end
+    if not Players:FindFirstChild(p.Name) then return false end
+    local c = p.Character; if not c then return false end
+    if not c:FindFirstChild("HumanoidRootPart") then return false end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    if p.Team and LP.Team and p.Team == LP.Team then return false end
+    return true
+end
+
+local function pickTarget()
+    local mc = LP.Character; if not mc then return nil end
+    local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return nil end
+    local best, bd = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isValid(p) then
+            local d = (p.Character.HumanoidRootPart.Position - mr.Position).Magnitude
+            if d < bd then bd=d; best=p end
+        end
+    end
+    return best
+end
+
+local function tgtDist()
+    if not TGT or not TGT.Character then return math.huge end
+    local mc = LP.Character; if not mc then return math.huge end
+    local mr = mc:FindFirstChild("HumanoidRootPart"); if not mr then return math.huge end
+    local tr = TGT.Character:FindFirstChild("HumanoidRootPart"); if not tr then return math.huge end
+    return (tr.Position - mr.Position).Magnitude
+end
+
+-- ================================================================
+-- [8] AIMBOT
+-- ================================================================
+if ENABLE_AIMBOT then
+    local _lastAim = 0
+    RunService.Heartbeat:Connect(function()
+        local now = tick()
+        if now - _lastAim < 0.125 then return end
+        _lastAim = now
+        pcall(function()
+            local mc = LP.Character; if not mc then return end
+            local mh = mc:FindFirstChildOfClass("Humanoid")
+            if not mh or mh.Health <= 0 then return end
+            local dist = tgtDist()
+            if not TGT or not isValid(TGT) or (now - TGT_AT > 6) or (dist > 80) then
+                TGT = pickTarget(); TGT_AT = now
+            end
+            if not TGT then return end
+            local tc = TGT.Character; if not tc then return end
+            local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
+            local cam = workspace.CurrentCamera; if not cam then return end
+            local vel      = tr.AssemblyLinearVelocity
+            local speed    = vel.Magnitude
+            local predMult = 0.88 + math.clamp(speed/200, 0, 0.4)
+            local tDist    = (tr.Position - cam.CFrame.Position).Magnitude
+            local pred     = tr.Position + vel*(tDist/260)*predMult + Vector3.new(0,2.2,0)
+            local dir = (pred - cam.CFrame.Position).Unit
+            cam.CFrame = CFrame.new(cam.CFrame.Position, cam.CFrame.Position + dir)
+        end)
+    end)
+end
+
+-- ================================================================
+-- [9] M1 LOOP
+-- ================================================================
+if ENABLE_M1 then
+    task.spawn(function()
+        while task.wait(0.05) do
+            if not TGT or not isValid(TGT) then continue end
+            pcall(function()
+                local mc = LP.Character; if not mc then return end
+                local mh = mc:FindFirstChildOfClass("Humanoid")
+                if not mh or mh.Health <= 0 then return end
+                if not canM1(mc) then return end
+                if tgtDist() > 25 then return end
+                local tc = TGT.Character; if not tc then return end
+                local tr = tc:FindFirstChild("HumanoidRootPart"); if not tr then return end
+                local cam = workspace.CurrentCamera; if not cam then return end
+                local sp, onScreen = cam:WorldToViewportPoint(tr.Position)
+                if not onScreen or sp.Z <= 0 then return end
+                local vp = cam.ViewportSize
+                local cx = math.clamp(sp.X + math.random(-3,3), 1, vp.X-1)
+                local cy = math.clamp(sp.Y + math.random(-3,3), 1, vp.Y-1)
+                doM1(cx, cy)
+            end)
+        end
+    end)
+end
+
+print("✅ Bounty.lua loaded")
